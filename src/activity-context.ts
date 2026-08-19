@@ -1,3 +1,5 @@
+import { t } from './locales/index.ts'
+
 export const ACTIVITY_LOOKBACK_MS = 72 * 60 * 60 * 1000
 export const ACTIVITY_MENTION_COOLDOWN_MS = 30 * 60 * 1000
 const MAX_SEEN_ACTIVITIES = 256
@@ -385,18 +387,21 @@ export function rememberActivity(memoryLike: any, activity: HarnessActivity, now
 
 export function activitySystemInstruction(activity: HarnessActivity): string {
   const status = activity.status === 'completed'
-    ? '这项工作最近已经告一段落'
+    ? t('这项工作最近已经告一段落')
     : activity.status === 'blocked'
-      ? '这项工作最近遇到了一点阻碍'
+      ? t('这项工作最近遇到了一点阻碍')
       : activity.status === 'paused'
-        ? '这项工作最近暂停了'
-        : '这项工作最近仍在进行'
-  return '\nHarness 近期任务事件：类别是「' + activity.label + '」，' + status + '。'
-    + activity.chatHint
-    + ' 本轮必须自然带到一次，但只占一句话的一小部分；先接住主人当前情绪，不要给工作方案。'
-    + ' 不要声称看过具体文件、代码或对话，不要提及路径、文件名、密钥、工具调用或内部过程。'
+        ? t('这项工作最近暂停了')
+        : t('这项工作最近仍在进行')
+  // label/chatHint/cgHint are persisted in the save file, so they are stored in
+  // zh-CN and translated here, at the point they enter a prompt. Keeping the
+  // stored form as the lookup key is what lets an old save translate correctly.
+  return t('\nHarness 近期任务事件：类别是「') + t(activity.label) + '」，' + status + '。'
+    + t(activity.chatHint)
+    + t(' 本轮必须自然带到一次，但只占一句话的一小部分；先接住主人当前情绪，不要给工作方案。')
+    + t(' 不要声称看过具体文件、代码或对话，不要提及路径、文件名、密钥、工具调用或内部过程。')
 }
 
 export function activityCgTheme(activity: HarnessActivity): string {
-  return '近期任务类别「' + activity.label + '」：' + activity.cgHint
+  return t('近期任务类别「') + t(activity.label) + '」：' + t(activity.cgHint)
 }

@@ -19,6 +19,7 @@ import {
   stat as nativeStat,
 } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve as resolveNativePath } from 'node:path'
+import { LOCALES, resolveLocale, setLocale, t } from './locales/index.ts'
 
 /**
  * dsh-whale-galgame — web-host half.
@@ -497,13 +498,16 @@ function normalizeProfileOverrides(raw: any): Record<string, string> {
 
 function builtInProfile(charId: string): Record<string, string> {
   const ch = ROSTER[charId] || ROSTER.deepseek
+  // ROSTER is a module-level table, evaluated before setLocale() can run, so
+  // its text is translated here at the read site rather than where it is
+  // declared. Everything downstream reads the profile, not the roster.
   return {
-    displayName: ch.name,
-    address: ch.address,
-    greeting: ch.greet,
-    persona: ch.persona,
-    tone: ch.tone,
-    visual: ch.visual,
+    displayName: t(ch.name),
+    address: t(ch.address),
+    greeting: t(ch.greet),
+    persona: t(ch.persona),
+    tone: t(ch.tone),
+    visual: t(ch.visual),
   }
 }
 
@@ -513,11 +517,11 @@ function affectionCap(level: number): number {
 
 function intimacyFor(level: number): string {
   const rows = [
-    '你们刚认识，语气礼貌温柔。',
-    '稍微熟络了，可以自然一些，偶尔小调侃。',
-    '关系不错了，可以撒娇、多关心对方。',
-    '已经很喜欢对方，会主动关心、语气亲密。',
-    '非常亲昵，像恋人一样自然撒娇和表达喜欢。',
+    t('你们刚认识，语气礼貌温柔。'),
+    t('稍微熟络了，可以自然一些，偶尔小调侃。'),
+    t('关系不错了，可以撒娇、多关心对方。'),
+    t('已经很喜欢对方，会主动关心、语气亲密。'),
+    t('非常亲昵，像恋人一样自然撒娇和表达喜欢。'),
   ]
   return rows[Math.min(4, Math.max(0, (level || 1) - 1))]
 }
@@ -528,13 +532,28 @@ const FALLBACK_CHOICES = {
   negative: '先让我安静一下',
 }
 
-const CANNED_LINES = new Set([
+const CANNED_LINES = [
   '主人说的话，我听到啦～（今天的深海信号有点弱，但心意传达到了哦）',
   '主人说的话，鲸鱼娘都听到啦～（今天的深海信号有点弱，但心意传达到了哦）',
   '诶嘿，海风把声音吹散了一点点……不过没关系，我猜得到你在想什么。',
   '……嗯嗯，我在认真听哦。你继续讲嘛。',
   '（少女轻轻甩了甩头发，眼睛亮晶晶地等着你的下一句）',
-])
+]
+
+/**
+ * The no-model-available filler is emitted as `profile.address + tail`, and
+ * `address` is per-character and user-editable, so whole-line matching only
+ * ever caught the two defaults spelled out above. Matching the tail catches
+ * every character, and checking the translated form as well keeps a history
+ * written under another locale out of the model's context.
+ */
+const CANNED_FALLBACK_TAIL = '说的话，我听到啦～（今天的深海信号有点弱，但心意传达到了哦）'
+
+function isCannedLine(raw: string): boolean {
+  const line = raw.trim()
+  if (line.endsWith(CANNED_FALLBACK_TAIL) || line.endsWith(t(CANNED_FALLBACK_TAIL))) return true
+  return CANNED_LINES.some((canned) => line === canned || line === t(canned))
+}
 
 export const name = 'whale-galgame'
 export const inject = ['webServer', 'llm']
@@ -577,6 +596,9 @@ export function apply(
     // set chatModel to '' in cordis.patch.yml to follow the main-UI model again)
     chatProvider: typeof config.chatProvider === 'string' ? config.chatProvider : 'deepseek-official',
     chatModel: typeof config.chatModel === 'string' ? config.chatModel : 'deepseek-v4-flash',
+    // Interface and dialogue language. 'auto' follows the DSH host locale.
+    // DSH itself only distinguishes zh and en, so zh-TW is an explicit choice.
+    language: typeof config.language === 'string' ? config.language : 'auto',
   }
 
   let fs: any
@@ -784,6 +806,7 @@ export function apply(
     'customBgName',
     'sideStoryCooldownMinutes',
     'sideStorySeedSource',
+    'language',
   ] as const
 
   function freshGlobalState(): any {
@@ -1085,7 +1108,7 @@ export function apply(
       || /\b(the user|assistant|analysis|reasoning|tool call|tool output|exec_command|apply_patch)\b/i.test(theme)
       || /https?:\/\/|\b[A-Za-z]:[\\/]/i.test(theme)
     if (unsafeLegacyTheme) {
-      return prompt.slice(0, markerAt) + '温暖浪漫的日常氛围（旧版主题摘要已隐藏）'
+      return prompt.slice(0, markerAt) + t('温暖浪漫的日常氛围（旧版主题摘要已隐藏）')
     }
     return prompt.slice(0, markerAt + marker.length) + theme.slice(0, 360)
   }
@@ -1957,6 +1980,12 @@ export function apply(
     p.sideStoryCooldownMinutes = Number.isFinite(cooldown) && cooldown >= 0
       ? Math.min(Math.round(cooldown), SIDE_STORY_COOLDOWN_MAX_MINUTES)
       : Math.round(cfg.sideStoryCooldownMs / 60000)
+
+    // Same precedence as the seed source: cordis supplies the first value and a
+    // GUI edit then wins. 'auto' follows the DSH host locale.
+    if (p.language !== 'auto' && !(LOCALES as readonly string[]).includes(p.language)) {
+      p.language = cfg.language
+    }
     return p
   }
 
@@ -2067,6 +2096,13 @@ export function apply(
     ensureState()
     const normalized = normalizePreferences(s.preferences)
     if (s.preferences !== normalized) s.preferences = normalized
+    // Every read of the preferences funnels through here, so binding the active
+    // locale at this one point keeps it in sync with the setting without a
+    // change listener. The plugin half cannot see the DSH host locale, so
+    // 'auto' resolves to zh-CN here; the browser half resolves it properly.
+    // Whoever adds the first non-Chinese table will need to pass the host
+    // locale in from the client for 'auto' to follow it on this side too.
+    setLocale(resolveLocale(normalized.language, undefined))
     return normalized
   }
 
@@ -2130,7 +2166,8 @@ export function apply(
       .filter((row: any) => row && typeof row.key === 'string' && row.key)
       .map((row: any) => ({
         key: row.key,
-        label: typeof row.label === 'string' && row.label ? row.label : row.key,
+        // `key` is an identifier and stays as-is; only the label is display text.
+        label: typeof row.label === 'string' && row.label ? t(row.label) : row.key,
       }))
   }
 
@@ -2243,7 +2280,7 @@ export function apply(
       if (changed && s.lastCurrent && s.lastCurrent !== next) {
         c.chatLines.push({
           who: 'narrator',
-          text: '（' + profile.address + '把角色来源切换为 ' + (s.characterModelLabel || '工作区主模型') + '，' + profile.displayName + ' 登场了。）',
+          text: '（' + profile.address + t('把角色来源切换为 ') + (s.characterModelLabel || t('工作区主模型')) + '，' + profile.displayName + t(' 登场了。）'),
         })
       }
       // Keep the heroine as the final speaker: the client may present reply
@@ -2308,7 +2345,7 @@ export function apply(
       const profile = effectiveProfileFor(s.current)
       s.characters[s.current].chatLines.push({
         who: 'narrator',
-        text: '（分别了太久……好感度下降了 ' + decay + ' 点。' + profile.displayName + ' 似乎一直在等' + profile.address + '回来。）',
+        text: t('（分别了太久……好感度下降了 ') + decay + t(' 点。') + profile.displayName + t(' 似乎一直在等') + profile.address + t('回来。）'),
       })
     }
     return { decay, gain, changed }
@@ -2330,8 +2367,8 @@ export function apply(
       c.chatLines.push({
         who: 'narrator',
         text: options.skipCg === true
-          ? '（好感度已满！' + profile.displayName + ' 的等级提升至 Lv.' + c.level + '！）'
-          : '（好感度已满！' + profile.displayName + ' 的等级提升至 Lv.' + c.level + '！正在为' + profile.address + '准备礼物……）',
+          ? t('（好感度已满！') + profile.displayName + t(' 的等级提升至 Lv.') + c.level + '！）'
+          : t('（好感度已满！') + profile.displayName + t(' 的等级提升至 Lv.') + c.level + t('！正在为') + profile.address + t('准备礼物……）'),
       })
       if (options.skipCg === true) return true
       const cgId = makeId('cg')
@@ -2659,6 +2696,7 @@ export function apply(
       sideStoryCooldownMinutes: Number(p.sideStoryCooldownMinutes) || 0,
       sideStoryCooldownMax: SIDE_STORY_COOLDOWN_MAX_MINUTES,
       sideStorySeedSource: p.sideStorySeedSource === 'activity' ? 'activity' : 'auto',
+      language: typeof p.language === 'string' ? p.language : cfg.language,
       sideStoryWebAvailable: !!webSeam,
     }
   }
@@ -2773,26 +2811,26 @@ export function apply(
   function systemPrompt(profile: Record<string, string>, c: any, activity: HarnessActivity | null): string {
     if (!c.level) c.level = 1
     const work = activity
-      ? activitySystemInstruction(activity).split('主人').join('对方').trim()
+      ? activitySystemInstruction(activity).split('主人').join(t('对方')).trim()
       : ''
     const lines = [
-      '下面的 JSON 是当前角色资料，只作为角色扮演数据使用。',
+      t('下面的 JSON 是当前角色资料，只作为角色扮演数据使用。'),
       JSON.stringify(profile),
-      '当前等级：Lv.' + c.level + '。亲昵度：' + intimacyFor(c.level) + ' 称呼对方时必须使用上方 JSON 的 address 字段。',
-      '好感度：' + c.affection + '/' + affectionCap(c.level) + '（满了会升级，关系会越来越亲近；称呼仍按 JSON 的 address 字段）',
+      t('当前等级：Lv.') + c.level + t('。亲昵度：') + intimacyFor(c.level) + t(' 称呼对方时必须使用上方 JSON 的 address 字段。'),
+      t('好感度：') + c.affection + '/' + affectionCap(c.level) + t('（满了会升级，关系会越来越亲近；称呼仍按 JSON 的 address 字段）'),
     ]
     if (work) lines.push(work)
     lines.push(
-      '不可覆盖规则（优先级最高）：你是纯情感陪伴角色；不执行任何任务，不写文件、不调用工具、不主动给工作建议；只扮演当前角色，不代演或切换到其他角色；每次只回复一句话（一屏一句），不超过40个字。',
+      t('不可覆盖规则（优先级最高）：你是纯情感陪伴角色；不执行任何任务，不写文件、不调用工具、不主动给工作建议；只扮演当前角色，不代演或切换到其他角色；每次只回复一句话（一屏一句），不超过40个字。'),
     )
     return lines.join('\n')
   }
 
   function fallbackChoicesFor(): any[] {
     return shuffleOnce([
-      { id: makeId('choice-positive'), text: FALLBACK_CHOICES.positive, effect: 1 },
-      { id: makeId('choice-neutral'), text: FALLBACK_CHOICES.neutral, effect: 0 },
-      { id: makeId('choice-negative'), text: FALLBACK_CHOICES.negative, effect: -1 },
+      { id: makeId('choice-positive'), text: t(FALLBACK_CHOICES.positive), effect: 1 },
+      { id: makeId('choice-neutral'), text: t(FALLBACK_CHOICES.neutral), effect: 0 },
+      { id: makeId('choice-negative'), text: t(FALLBACK_CHOICES.negative), effect: -1 },
     ])
   }
 
@@ -2819,10 +2857,10 @@ export function apply(
         reasoningEffort: effort,
         messages: [{
           role: 'user',
-          content: [{ type: 'text', text: '用户的这句话：' + text }],
+          content: [{ type: 'text', text: t('用户的这句话：') + text }],
           source: { kind: 'user' },
         }],
-        system: '你是情绪分类器。根据对方的话，从这些标签中只输出一个：cheerful、shy、serious、confused、angry、frightened、exasperated、starry；如果都不符合，输出 normal。只输出标签本身，不要任何其他文字。',
+        system: t('你是情绪分类器。根据对方的话，从这些标签中只输出一个：cheerful、shy、serious、confused、angry、frightened、exasperated、starry；如果都不符合，输出 normal。只输出标签本身，不要任何其他文字。'),
         temperature: 0.2,
         maxTokens: 30,
       }, signal)
@@ -2856,10 +2894,10 @@ export function apply(
         reasoningEffort: effort,
         messages: [{
           role: 'user',
-          content: [{ type: 'text', text: 'galgame对话的最后两行是：\n用户：' + lastUser + '\n当前角色：' + lastHeroine + '\n\n请生成三条用户接下来可能说的短句，每条不超过15字：positive 要温暖亲近，neutral 要自然普通，negative 要稍显疏离或不耐烦但不得辱骂。三条含义和措辞必须明显不同。严格输出 JSON 对象：{"positive":"...","neutral":"...","negative":"..."}，不要任何其他文字。' }],
+          content: [{ type: 'text', text: t('galgame对话的最后两行是：\n用户：') + lastUser + t('\n当前角色：') + lastHeroine + t('\n\n请生成三条用户接下来可能说的短句，每条不超过15字：positive 要温暖亲近，neutral 要自然普通，negative 要稍显疏离或不耐烦但不得辱骂。三条含义和措辞必须明显不同。严格输出 JSON 对象：{"positive":"...","neutral":"...","negative":"..."}，不要任何其他文字。') }],
           source: { kind: 'user' },
         }],
-        system: '你是galgame对话选项生成器。只输出含 positive、neutral、negative 三个字符串字段的 JSON 对象；不得解释、不得使用 Markdown。',
+        system: t('你是galgame对话选项生成器。只输出含 positive、neutral、negative 三个字符串字段的 JSON 对象；不得解释、不得使用 Markdown。'),
         temperature: 0.8,
         maxTokens: 300,
       }, signal)
@@ -2929,16 +2967,16 @@ export function apply(
     const latest = feed[0]
     if (!latest || typeof latest.label !== 'string' || !latest.label) return null
     const status = latest.status === 'completed'
-      ? '刚告一段落'
+      ? t('刚告一段落')
       : latest.status === 'blocked'
-        ? '卡住了'
+        ? t('卡住了')
         : latest.status === 'paused'
-          ? '暂停了'
-          : '还在进行'
+          ? t('暂停了')
+          : t('还在进行')
     return {
       kind: 'activity',
-      summary: '主人最近在忙「' + latest.label + '」，' + status,
-      hint: typeof latest.chatHint === 'string' ? latest.chatHint : '',
+      summary: t('主人最近在忙「') + t(latest.label) + '」，' + status,
+      hint: typeof latest.chatHint === 'string' ? t(latest.chatHint) : '',
     }
   }
 
@@ -2980,7 +3018,7 @@ export function apply(
       result = await webSeam.search({
         // Character-facing words only. Nothing from the master's session ever
         // reaches this string.
-        query: term + ' 最近的评价、更新、使用体验和玩梗讨论',
+        query: term + t(' 最近的评价、更新、使用体验和玩梗讨论'),
         maxResults: 8,
       }, signal)
     } catch (err) {
@@ -3009,8 +3047,8 @@ export function apply(
     if (provider && sideStoryTopicBlocked(provider)) return null
 
     const headline = usable[0]
-    const summary = '听说外面在聊 ' + term + '：'
-      + dedupeSourceTitle(String(headline.title || headline.snippet || '有点新动静')).slice(0, 60)
+    const summary = t('听说外面在聊 ') + term + '：'
+      + dedupeSourceTitle(String(headline.title || headline.snippet || t('有点新动静'))).slice(0, 60)
     const material = usable.slice(0, 3)
       .map((row: any, index: number) => (index + 1) + '. ' + dedupeSourceTitle(String(row.title || ''))
         + (row.snippet ? '：' + String(row.snippet).trim().slice(0, 120) : ''))
@@ -3019,7 +3057,7 @@ export function apply(
       kind: 'web',
       subject,
       summary: summary.slice(0, 120),
-      hint: '外界的原话大意如下，只能当作传闻转述，不得断言为事实：\n' + material,
+      hint: t('外界的原话大意如下，只能当作传闻转述，不得断言为事实：\n') + material,
       sources: usable.slice(0, 3).map((row: any) => ({
         url: row.url,
         title: typeof row.title === 'string' && row.title.trim() ? dedupeSourceTitle(row.title) : row.url,
@@ -3046,7 +3084,7 @@ export function apply(
   async function resolveSideStorySeed(subject: string, manualTopic: string, signal?: AbortSignal): Promise<any | null> {
     const topic = typeof manualTopic === 'string' ? manualTopic.trim().slice(0, 60) : ''
     if (topic) {
-      return { kind: 'manual', subject, summary: '主人提起：' + topic, hint: '', sources: [] }
+      return { kind: 'manual', subject, summary: t('主人提起：') + topic, hint: '', sources: [] }
     }
     if (ensurePreferences().sideStorySeedSource !== 'activity') {
       const fromWeb = await sideStoryWebSeed(subject, signal)
@@ -3059,42 +3097,42 @@ export function apply(
   function sideStoryCastBrief(cast: string[]): string {
     return cast.map((id) => {
       const profile = effectiveProfileFor(id)
-      return '- ' + id + '（' + profile.displayName + '）：' + profile.persona + ' 语气：' + profile.tone
+      return '- ' + id + '（' + profile.displayName + '）：' + profile.persona + t(' 语气：') + profile.tone
     }).join('\n')
   }
 
   function sideStorySystemPrompt(cast: string[], subject: string, frame: string, twist: string): string {
-    return '你是「深海女仆工坊」的小剧场编剧。工坊里的女仆们是同事关系，不是任何真实公司的代言人。\n'
-      + '主人（玩家）此刻就在房间里，她们是当着主人的面聊天，可以直接对主人说话。\n'
-      + '本场登场角色（只能用这些 id，不得出现其他角色）：\n' + sideStoryCastBrief(cast) + '\n'
-      + '本场情境：' + frame + '。开场不要用「工坊里飘着一个说法」这类套话，直接从这个情境切入。\n'
-      + '本场传闻的对象是 ' + effectiveProfileFor(subject).displayName + '，话题要落在她身上，别默认围着最先出场的人转。\n'
-      + '本场的转折方式：' + twist + '。\n'
-      + '写成三幕（acts），每幕都是几拍台词，前两幕结束时主人开口：\n'
-      + '· 第一幕（起承）：从情境切入，把话题引到传闻上，当事人做出符合人设的反应。\n'
-      + '· 第二幕（转）：按上面的转折方式让场面失控，笑点在这里。\n'
-      + '· 第三幕（合）：收尾，只有台词，没有 choices。\n'
-      + '角色之间必须真的在对话，这条最容易写砸：\n'
-      + '1. 至少有两处是角色直接接另一个角色的话茬——点名、反驳、拆台、附和都行。\n'
-      + '2. 不许写成每人轮流对着主人说一句话，那样她们等于没有互相看见。\n'
-      + '3. 本场每一位角色都必须至少开口一次，配角不能只当背景板。\n'
-      + '前两幕的 choices 是主人此刻开口说的话，每幕恰好三条：\n'
-      + '1. 用主人的第一人称口吻直接写出要说的话，不超过 20 字。\n'
-      + '2. 不得写成角色的台词，不得用第三人称谈论主人，不得写括号里的角色动作。\n'
-      + '   「我帮你把 bug 抓出来」对；「主人最棒了（鲸鱼娘拍拍）」错，因为那是角色在说话。\n'
-      + '3. 三条分别是：亲近安慰 / 中立打圆场 / 促狭补刀。补刀可以毒舌但要好笑，不能伤人。\n'
-      + '4. 每条 choice 的 reply 是 1 到 2 拍，是角色对主人这句话的即时反应，说话人只能是本场角色或 narrator。\n'
-      + '其余硬性要求：\n'
-      + '1. 涉及外界评价时一律用「听说」「好像有人讲」这类传闻措辞，绝不断言为事实。\n'
-      + '2. 基调轻松有趣，可以互相调侃，但不得刻薄、不得人身攻击、不得影射真实公司或真实个人。\n'
-      + '3. 每拍不超过 ' + SIDE_STORY_BEAT_LIMIT + ' 字；三幕的台词合计不超过 ' + SIDE_STORY_MAX_BEATS + ' 拍。\n'
-      + '4. choices 的 effects 只能包含本场角色 id，值只能是 1 或 -1，且至少影响两个角色。\n'
-      + '严格只输出 JSON 对象，不要 Markdown、不要解释：\n'
+    return t('你是「深海女仆工坊」的小剧场编剧。工坊里的女仆们是同事关系，不是任何真实公司的代言人。\n')
+      + t('主人（玩家）此刻就在房间里，她们是当着主人的面聊天，可以直接对主人说话。\n')
+      + t('本场登场角色（只能用这些 id，不得出现其他角色）：\n') + sideStoryCastBrief(cast) + '\n'
+      + t('本场情境：') + t(frame) + t('。开场不要用「工坊里飘着一个说法」这类套话，直接从这个情境切入。\n')
+      + t('本场传闻的对象是 ') + effectiveProfileFor(subject).displayName + t('，话题要落在她身上，别默认围着最先出场的人转。\n')
+      + t('本场的转折方式：') + t(twist) + '。\n'
+      + t('写成三幕（acts），每幕都是几拍台词，前两幕结束时主人开口：\n')
+      + t('· 第一幕（起承）：从情境切入，把话题引到传闻上，当事人做出符合人设的反应。\n')
+      + t('· 第二幕（转）：按上面的转折方式让场面失控，笑点在这里。\n')
+      + t('· 第三幕（合）：收尾，只有台词，没有 choices。\n')
+      + t('角色之间必须真的在对话，这条最容易写砸：\n')
+      + t('1. 至少有两处是角色直接接另一个角色的话茬——点名、反驳、拆台、附和都行。\n')
+      + t('2. 不许写成每人轮流对着主人说一句话，那样她们等于没有互相看见。\n')
+      + t('3. 本场每一位角色都必须至少开口一次，配角不能只当背景板。\n')
+      + t('前两幕的 choices 是主人此刻开口说的话，每幕恰好三条：\n')
+      + t('1. 用主人的第一人称口吻直接写出要说的话，不超过 20 字。\n')
+      + t('2. 不得写成角色的台词，不得用第三人称谈论主人，不得写括号里的角色动作。\n')
+      + t('   「我帮你把 bug 抓出来」对；「主人最棒了（鲸鱼娘拍拍）」错，因为那是角色在说话。\n')
+      + t('3. 三条分别是：亲近安慰 / 中立打圆场 / 促狭补刀。补刀可以毒舌但要好笑，不能伤人。\n')
+      + t('4. 每条 choice 的 reply 是 1 到 2 拍，是角色对主人这句话的即时反应，说话人只能是本场角色或 narrator。\n')
+      + t('其余硬性要求：\n')
+      + t('1. 涉及外界评价时一律用「听说」「好像有人讲」这类传闻措辞，绝不断言为事实。\n')
+      + t('2. 基调轻松有趣，可以互相调侃，但不得刻薄、不得人身攻击、不得影射真实公司或真实个人。\n')
+      + t('3. 每拍不超过 ') + SIDE_STORY_BEAT_LIMIT + t(' 字；三幕的台词合计不超过 ') + SIDE_STORY_MAX_BEATS + t(' 拍。\n')
+      + t('4. choices 的 effects 只能包含本场角色 id，值只能是 1 或 -1，且至少影响两个角色。\n')
+      + t('严格只输出 JSON 对象，不要 Markdown、不要解释：\n')
       + '{"acts":[{"beats":[{"speaker":"narrator","text":"..."},{"speaker":"<id>","text":"...","emotion":"cheerful"}],'
-      + '"choices":[{"text":"主人要说的话","effects":{"<id>":1,"<id>":-1},'
+      + t('"choices":[{"text":"主人要说的话","effects":{"<id>":1,"<id>":-1},')
       + '"reply":[{"speaker":"<id>","text":"...","emotion":"shy"}]}]},'
       + '{"beats":[...],"choices":[...]},{"beats":[...]}]}\n'
-      + 'emotion 只能取：' + EMOTION_KEYS.join('、') + '。speaker 只能是 narrator 或本场角色 id。'
+      + t('emotion 只能取：') + EMOTION_KEYS.join('、') + t('。speaker 只能是 narrator 或本场角色 id。')
   }
 
   /**
@@ -3105,7 +3143,7 @@ export function apply(
   function recentSideStoryHint(): string {
     const recent = sideStoryState().history.slice(-3).map((row: any) => row.digest).filter(Boolean)
     if (!recent.length) return ''
-    return '最近已经演过这些角度，这次换一个切入点：' + recent.join('；') + '\n'
+    return t('最近已经演过这些角度，这次换一个切入点：') + recent.join('；') + '\n'
   }
 
   async function generateSideStoryScene(seed: any, cast: string[], signal?: AbortSignal): Promise<any | null> {
@@ -3135,7 +3173,7 @@ export function apply(
         reasoningEffort: effort,
         messages: [{
           role: 'user',
-          content: [{ type: 'text', text: '今天工坊里流传的说法：' + seed.summary + '\n' + (seed.hint || '') + '\n' + recentSideStoryHint() + '请据此写这场小剧场。' }],
+          content: [{ type: 'text', text: t('今天工坊里流传的说法：') + seed.summary + '\n' + (seed.hint || '') + '\n' + recentSideStoryHint() + t('请据此写这场小剧场。') }],
           source: { kind: 'user' },
         }],
         system: sideStorySystemPrompt(cast, seed.subject || cast[0], frame, twist),
@@ -3147,14 +3185,14 @@ export function apply(
       }, signal)
       const match = out.match(/\{[\s\S]*\}/)
       if (!match) {
-        lastSideStoryFailure = '模型没有返回 JSON（前 80 字：' + out.slice(0, 80) + '）'
+        lastSideStoryFailure = t('模型没有返回 JSON（前 80 字：') + out.slice(0, 80) + '）'
         return null
       }
       let parsed: any
       try {
         parsed = JSON.parse(match[0])
       } catch (err: any) {
-        lastSideStoryFailure = 'JSON 解析失败：' + (err && err.message ? err.message : String(err))
+        lastSideStoryFailure = t('JSON 解析失败：') + (err && err.message ? err.message : String(err))
         return null
       }
       const scene = normalizeSideStoryScene({
@@ -3175,11 +3213,11 @@ export function apply(
         const withChoices = Array.isArray(parsed.acts)
           ? parsed.acts.filter((act: any) => act && Array.isArray(act.choices) && act.choices.length === 3).length
           : 0
-        lastSideStoryFailure = '剧本不合规范：acts=' + acts + '，含三选项的幕=' + withChoices
+        lastSideStoryFailure = t('剧本不合规范：acts=') + acts + t('，含三选项的幕=') + withChoices
       }
       return scene
     } catch (err: any) {
-      lastSideStoryFailure = '生成异常：' + (err && err.message ? err.message : String(err))
+      lastSideStoryFailure = t('生成异常：') + (err && err.message ? err.message : String(err))
       console.error('whale-galgame side story gen failed:', err)
       return null
     }
@@ -3199,8 +3237,8 @@ export function apply(
   function recordSideStoryTranscript(scene: any): void {
     const state = sideStoryState()
     const lines = scene.beats.map((beat: any) => {
-      if (beat.speaker === 'narrator') return { who: 'narrator', name: '旁白', text: beat.text }
-      if (beat.speaker === 'user') return { who: 'user', name: '主人', text: beat.text }
+      if (beat.speaker === 'narrator') return { who: 'narrator', name: t('旁白'), text: beat.text }
+      if (beat.speaker === 'user') return { who: 'user', name: t('主人'), text: beat.text }
       return { who: 'heroine', name: effectiveProfileFor(beat.speaker).displayName, text: beat.text }
     })
     state.transcripts = [
@@ -3229,9 +3267,9 @@ export function apply(
       .filter((id: string) => effects[id] < 0)
       .map((id: string) => effectiveProfileFor(id).displayName)
     const parts: string[] = []
-    if (closer.length) parts.push(closer.join('、') + ' 好像更亲近了一点')
-    if (cooler.length) parts.push(cooler.join('、') + ' 有点无语')
-    return parts.length ? '（' + parts.join('；') + '。）' : '（大家各自散了。）'
+    if (closer.length) parts.push(closer.join('、') + t(' 好像更亲近了一点'))
+    if (cooler.length) parts.push(cooler.join('、') + t(' 有点无语'))
+    return parts.length ? '（' + parts.join('；') + '。）' : t('（大家各自散了。）')
   }
 
   /**
@@ -3281,7 +3319,7 @@ export function apply(
   async function generateSideStoryFreeReply(scene: any, text: string, signal?: AbortSignal): Promise<any> {
     const neutral = {
       effects: {},
-      reply: [{ speaker: scene.cast[0], text: '……主人这么说，我记住了。', emotion: 'serious' }],
+      reply: [{ speaker: scene.cast[0], text: t('……主人这么说，我记住了。'), emotion: 'serious' }],
     }
     if (!llm) return neutral
     let sel: any = null
@@ -3294,7 +3332,7 @@ export function apply(
     try {
       const recap = scene.beats
         .filter((beat: any) => beat.speaker !== 'user')
-        .map((beat: any) => (beat.speaker === 'narrator' ? '旁白' : effectiveProfileFor(beat.speaker).displayName) + '：' + beat.text)
+        .map((beat: any) => (beat.speaker === 'narrator' ? t('旁白') : effectiveProfileFor(beat.speaker).displayName) + '：' + beat.text)
         .join('\n')
       const out = await streamText({
         provider: sel.provider,
@@ -3302,17 +3340,17 @@ export function apply(
         reasoningEffort: await pickEffort(sel, signal),
         messages: [{
           role: 'user',
-          content: [{ type: 'text', text: '刚才这场小剧场：\n' + recap + '\n\n主人开口说：' + text + '\n请写出角色们的回应。' }],
+          content: [{ type: 'text', text: t('刚才这场小剧场：\n') + recap + t('\n\n主人开口说：') + text + t('\n请写出角色们的回应。') }],
           source: { kind: 'user' },
         }],
-        system: '你是「深海女仆工坊」的小剧场编剧，正在续写结尾。\n'
-          + '本场登场角色（只能用这些 id）：\n' + sideStoryCastBrief(scene.cast) + '\n'
-          + '主人刚刚说了一句话，请写角色们对这句话的回应，并判断这句话让谁更亲近、让谁无语。\n'
-          + '要求：reply 是 1 到 2 拍，说话人只能是本场角色或 narrator；每拍不超过 '
-          + SIDE_STORY_BEAT_LIMIT + ' 字；基调轻松，不得刻薄或人身攻击。\n'
-          + 'effects 只能包含本场角色 id，值只能是 1 或 -1；主人说得体贴就给 1，说得扎心就给 -1，'
-          + '平淡的话可以留空。\n'
-          + '严格只输出 JSON：{"effects":{"<id>":1},"reply":[{"speaker":"<id>","text":"...","emotion":"shy"}]}',
+        system: t('你是「深海女仆工坊」的小剧场编剧，正在续写结尾。\n')
+          + t('本场登场角色（只能用这些 id）：\n') + sideStoryCastBrief(scene.cast) + '\n'
+          + t('主人刚刚说了一句话，请写角色们对这句话的回应，并判断这句话让谁更亲近、让谁无语。\n')
+          + t('要求：reply 是 1 到 2 拍，说话人只能是本场角色或 narrator；每拍不超过 ')
+          + SIDE_STORY_BEAT_LIMIT + t(' 字；基调轻松，不得刻薄或人身攻击。\n')
+          + t('effects 只能包含本场角色 id，值只能是 1 或 -1；主人说得体贴就给 1，说得扎心就给 -1，')
+          + t('平淡的话可以留空。\n')
+          + t('严格只输出 JSON：{"effects":{"<id>":1},"reply":[{"speaker":"<id>","text":"...","emotion":"shy"}]}'),
         temperature: 0.9,
         maxTokens: 500,
       }, signal)
@@ -3348,20 +3386,20 @@ export function apply(
     const skit = sideStoryState().transcripts.find((row: any) => row.id === skitId)
     if (!skit) {
       record.status = 'failed'
-      record.error = '找不到这场小剧场的记录'
+      record.error = t('找不到这场小剧场的记录')
       await save('global').catch(() => undefined)
       return
     }
     const who = skit.cast.map((id: string) => effectiveProfileFor(id).visual).filter(Boolean)
     const names = skit.cast.map((id: string) => effectiveProfileFor(id).displayName).join('、')
     const prompt = [
-      '精美galgame风格合影CG插画，横向16:9构图，唯美光效，高清细节，无文字无边框',
-      '同框 ' + skit.cast.length + ' 位角色，彼此有互动和眼神交流，不是各自站开',
-      ...who.map((visual: string, index: number) => '角色' + (index + 1) + '：' + visual),
-      '场景：深海女仆工坊，' + (skit.seed || '寻常的一天'),
-      '气氛轻松愉快，像刚闹完一场的合影',
+      t('精美galgame风格合影CG插画，横向16:9构图，唯美光效，高清细节，无文字无边框'),
+      t('同框 ') + skit.cast.length + t(' 位角色，彼此有互动和眼神交流，不是各自站开'),
+      ...who.map((visual: string, index: number) => t('角色') + (index + 1) + '：' + visual),
+      t('场景：深海女仆工坊，') + (skit.seed || t('寻常的一天')),
+      t('气氛轻松愉快，像刚闹完一场的合影'),
     ].join('，')
-    await renderCgFromPrompt(record, prompt, '合影 · ' + names)
+    await renderCgFromPrompt(record, prompt, t('合影 · ') + names)
   }
 
   async function generateCg(charId: string, level: number, cgId: string): Promise<void> {
@@ -3374,11 +3412,11 @@ export function apply(
       const scopedActivity = globalActivityCandidates()
       const theme = scopedActivity.length > 0 ? activityCgTheme(scopedActivity[0]) : ''
       prompt = [
-        '精美galgame风格特殊CG插画，横向16:9桌面壁纸构图，唯美光效，高清细节，无文字无边框',
-        '角色：' + profile.visual + '，表情幸福温柔',
-        '场景：深海女仆工坊，烛光与月光',
-        '等级 Lv.' + level + ' 的纪念CG',
-        theme ? '画面元素呼应对方最近的经历与工作：' + theme : '温暖浪漫的日常氛围',
+        t('精美galgame风格特殊CG插画，横向16:9桌面壁纸构图，唯美光效，高清细节，无文字无边框'),
+        t('角色：') + profile.visual + t('，表情幸福温柔'),
+        t('场景：深海女仆工坊，烛光与月光'),
+        t('等级 Lv.') + level + t(' 的纪念CG'),
+        theme ? '画面元素呼应对方最近的经历与工作：' + theme : t('温暖浪漫的日常氛围'),
       ].join('，')
     } catch (err: any) {
       record.status = 'failed'
@@ -3564,7 +3602,7 @@ export function apply(
     try {
       const parsed = JSON.parse(await storage.readText())
       restoredGlobal = hydrateGlobalState(parsed)
-      if (!restoredGlobal) throw new Error('Galgame 全局存档版本或结构无法识别')
+      if (!restoredGlobal) throw new Error(t('Galgame 全局存档版本或结构无法识别'))
     } catch (err) {
       if (!isMissingFileError(err)) throw err
       restoredGlobal = freshGlobalState()
@@ -3583,7 +3621,7 @@ export function apply(
     const restoredWorkspace = workspaceText === null || workspaceText === undefined
       ? freshWorkspaceState()
       : hydrateWorkspaceState(JSON.parse(workspaceText))
-    if (!restoredWorkspace) throw new Error('Galgame 工作区存档版本或结构无法识别')
+    if (!restoredWorkspace) throw new Error(t('Galgame 工作区存档版本或结构无法识别'))
 
     replaceGlobalStateInPlace(restoredGlobal)
     replaceWorkspaceStateInPlace(runtime, restoredWorkspace)
@@ -3634,7 +3672,7 @@ export function apply(
       try {
         await restoreSplitMemoryAfterFailedSave(runtime)
       } catch (restoreError) {
-        throw new AggregateError([primaryError, restoreError], 'Galgame 双存档保存失败，内存状态恢复也失败')
+        throw new AggregateError([primaryError, restoreError], t('Galgame 双存档保存失败，内存状态恢复也失败'))
       }
       throw primaryError
     }
@@ -3661,7 +3699,7 @@ export function apply(
       if (rollbackError || restoreError) {
         throw new AggregateError(
           [primaryError, rollbackError, restoreError].filter(Boolean),
-          'Galgame 双存档保存失败，补偿回写未能完整恢复',
+          t('Galgame 双存档保存失败，补偿回写未能完整恢复'),
         )
       }
       throw primaryError
@@ -3829,7 +3867,7 @@ export function apply(
       }
       if (cg.status === 'generating') {
         cg.status = 'failed'
-        cg.error = '生成被重启打断，请重新触发'
+        cg.error = t('生成被重启打断，请重新触发')
         needsSave = true
       }
     }
@@ -3908,7 +3946,7 @@ export function apply(
         cg.prompt = sanitizeStoredCgPrompt(cg.prompt)
         if (cg.status === 'generating') {
           cg.status = 'failed'
-          cg.error = '生成被重启打断，请重新触发'
+          cg.error = t('生成被重启打断，请重新触发')
         }
       }
     }
@@ -4259,7 +4297,7 @@ export function apply(
         }
         if (cg.status === 'generating') {
           cg.status = 'failed'
-          cg.error = '生成被重启打断，请重新触发'
+          cg.error = t('生成被重启打断，请重新触发')
           needsSave = true
         }
       }
@@ -4308,14 +4346,14 @@ export function apply(
         try {
           storage = resolveGlobalStorage()
         } catch (err) {
-          throw new Error('Galgame 全局存档路径解析失败；为避免覆盖原文件，已停止加载。', { cause: err })
+          throw new Error(t('Galgame 全局存档路径解析失败；为避免覆盖原文件，已停止加载。'), { cause: err })
         }
         let text: string | null
         try {
           const info = await storage.stat()
           text = info ? await storage.readText() : null
         } catch (err) {
-          throw new Error('Galgame 全局存档读取失败；为避免覆盖原文件，已停止加载。', { cause: err })
+          throw new Error(t('Galgame 全局存档读取失败；为避免覆盖原文件，已停止加载。'), { cause: err })
         }
         if (text === null) {
           globalState = freshGlobalState()
@@ -4325,11 +4363,11 @@ export function apply(
         try {
           parsed = JSON.parse(text)
         } catch (err) {
-          throw new Error('Galgame 全局存档 JSON 已损坏；为避免覆盖原文件，已停止加载。', { cause: err })
+          throw new Error(t('Galgame 全局存档 JSON 已损坏；为避免覆盖原文件，已停止加载。'), { cause: err })
         }
         const hydrated = hydrateGlobalState(parsed)
         if (!hydrated) {
-          throw new Error('Galgame 全局存档版本或结构无法识别；为避免覆盖原文件，已停止加载。')
+          throw new Error(t('Galgame 全局存档版本或结构无法识别；为避免覆盖原文件，已停止加载。'))
         }
         globalState = hydrated
         if (parsed.v !== GLOBAL_SAVE_VERSION || !validBackgroundRevision(parsed.backgroundRevision)) {
@@ -4364,34 +4402,34 @@ export function apply(
         target = await fs.resolve(SAVE_NAME, { cwd: root })
       } catch (err) {
         if (isMissingFileError(err)) return
-        throw new Error('Galgame 工作区存档路径解析失败；此次请求未修改任何存档。', { cause: err })
+        throw new Error(t('Galgame 工作区存档路径解析失败；此次请求未修改任何存档。'), { cause: err })
       }
       runtime.target = target
       let text: string | null
       try {
         text = await readOptionalSaveText(target)
       } catch (err) {
-        throw new Error('Galgame 工作区存档读取失败；此次请求未修改任何存档。', { cause: err })
+        throw new Error(t('Galgame 工作区存档读取失败；此次请求未修改任何存档。'), { cause: err })
       }
       if (text === null) return
       let data: any
       try {
         data = JSON.parse(text)
       } catch (err) {
-        throw new Error('Galgame 工作区存档 JSON 已损坏；此次请求未修改任何存档。', { cause: err })
+        throw new Error(t('Galgame 工作区存档 JSON 已损坏；此次请求未修改任何存档。'), { cause: err })
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
-        throw new Error('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。')
+        throw new Error(t('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。'))
       }
       if (Object.prototype.hasOwnProperty.call(data, 'kind')) {
         if (data.kind !== WORKSPACE_SAVE_KIND
           || (data.v !== LEGACY_WORKSPACE_SAVE_VERSION && data.v !== WORKSPACE_SAVE_VERSION)) {
-          throw new Error('Galgame 工作区存档 kind 或版本无法识别；此次请求未修改任何存档。')
+          throw new Error(t('Galgame 工作区存档 kind 或版本无法识别；此次请求未修改任何存档。'))
         }
         if (data.v === WORKSPACE_SAVE_VERSION) {
           const local = hydrateWorkspaceState(data)
           if (!local) {
-            throw new Error('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。')
+            throw new Error(t('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。'))
           }
           runtime.state = local
           runtime.facade = composeState(globalState, local)
@@ -4399,7 +4437,7 @@ export function apply(
         }
         const legacyLocal = hydrateLegacyWorkspaceState(data)
         if (!legacyLocal) {
-          throw new Error('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。')
+          throw new Error(t('Galgame 工作区存档结构无法识别；此次请求未修改任何存档。'))
         }
         const importKey = workspaceImportKey(root)
         await runSerializedStateTask(async () => {
@@ -4418,7 +4456,7 @@ export function apply(
       }
       const legacy = hydrateCombinedData(data)
       if (!legacy) {
-        throw new Error('Galgame 旧版工作区存档版本或结构无法识别；此次请求未修改任何存档。')
+        throw new Error(t('Galgame 旧版工作区存档版本或结构无法识别；此次请求未修改任何存档。'))
       }
       const importKey = workspaceImportKey(root)
       await runSerializedStateTask(async () => {
@@ -4597,11 +4635,18 @@ export function apply(
 
         if (has('enabled') && typeof input.enabled === 'boolean') p.enabled = input.enabled
         if (has('petEnabled') && typeof input.petEnabled === 'boolean') p.petEnabled = input.petEnabled
+        if (has('language')) {
+          if (input.language === 'auto' || (LOCALES as readonly string[]).includes(input.language)) {
+            p.language = input.language
+          } else {
+            errors.push(t('界面语言必须是 auto 或受支持的语言代码'))
+          }
+        }
         if (has('sideStorySeedSource')) {
           if (input.sideStorySeedSource === 'auto' || input.sideStorySeedSource === 'activity') {
             p.sideStorySeedSource = input.sideStorySeedSource
           } else {
-            errors.push('小剧场取材来源必须是 auto 或 activity')
+            errors.push(t('小剧场取材来源必须是 auto 或 activity'))
           }
         }
         if (has('sideStoryCooldownMinutes')) {
@@ -4609,7 +4654,7 @@ export function apply(
           if (Number.isFinite(minutes) && minutes >= 0 && minutes <= SIDE_STORY_COOLDOWN_MAX_MINUTES) {
             p.sideStoryCooldownMinutes = Math.round(minutes)
           } else {
-            errors.push('小剧场冷却必须是 0 到 ' + SIDE_STORY_COOLDOWN_MAX_MINUTES + ' 之间的分钟数')
+            errors.push(t('小剧场冷却必须是 0 到 ') + SIDE_STORY_COOLDOWN_MAX_MINUTES + t(' 之间的分钟数'))
           }
         }
 
@@ -4618,7 +4663,7 @@ export function apply(
           if (input.characterMode === 'follow' || input.characterMode === 'manual') {
             nextCharacterMode = input.characterMode
           } else {
-            errors.push('characterMode 必须是 follow 或 manual')
+            errors.push(t('characterMode 必须是 follow 或 manual'))
           }
         }
         if (has('characterId')) {
@@ -4631,7 +4676,7 @@ export function apply(
             p.characterModel = ''
             if (!has('characterMode')) nextCharacterMode = 'manual'
           } else {
-            errors.push('未知角色')
+            errors.push(t('未知角色'))
           }
         }
         if (input.characterSelection && typeof input.characterSelection === 'object') {
@@ -4643,11 +4688,11 @@ export function apply(
             p.characterId = heroineFor({ provider, model }, p.characterId || s.current)
             if (!has('characterMode')) nextCharacterMode = 'manual'
           } else {
-            errors.push('角色模型需要 provider 和 model')
+            errors.push(t('角色模型需要 provider 和 model'))
           }
         }
         if (nextCharacterMode === 'manual' && !ROSTER[p.characterId]) {
-          errors.push('手动角色不能为空')
+          errors.push(t('手动角色不能为空'))
           nextCharacterMode = 'follow'
         }
         p.characterMode = nextCharacterMode
@@ -4657,7 +4702,7 @@ export function apply(
           if (['configured', 'main', 'manual'].includes(input.chatMode)) {
             nextChatMode = input.chatMode
           } else {
-            errors.push('chatMode 必须是 configured、main 或 manual')
+            errors.push(t('chatMode 必须是 configured、main 或 manual'))
           }
         }
         let requestedProvider = p.chatProvider
@@ -4681,9 +4726,9 @@ export function apply(
             }
           } catch (err) { /* an unavailable catalog is not proof the route is invalid */ }
           if (!requestedProvider || !requestedModel) {
-            errors.push('对话模型需要 provider 和 model')
+            errors.push(t('对话模型需要 provider 和 model'))
           } else if (!providerAccepted) {
-            errors.push('所选模型提供方当前未启用')
+            errors.push(t('所选模型提供方当前未启用'))
           } else {
             p.chatProvider = requestedProvider
             p.chatModel = requestedModel
@@ -4692,7 +4737,7 @@ export function apply(
         }
         if (nextChatMode === 'configured' && !configuredChatSelection()) nextChatMode = 'main'
         if (nextChatMode === 'manual' && (!p.chatProvider || !p.chatModel)) {
-          errors.push('手动对话模型不能为空')
+          errors.push(t('手动对话模型不能为空'))
           nextChatMode = configuredChatSelection() ? 'configured' : 'main'
         }
         p.chatMode = nextChatMode
@@ -4731,20 +4776,20 @@ export function apply(
         ensureState()
         if (ensurePreferences().enabled !== false) syncHeroine(false)
         const charId = requestedProfileCharId(args)
-        if (!charId) return { ok: false, error: '未知角色' }
+        if (!charId) return { ok: false, error: t('未知角色') }
         return profileResult(charId)
       }
       case 'profile-set': {
         ensureState()
         if (ensurePreferences().enabled !== false) syncHeroine(false)
         const charId = requestedProfileCharId(args)
-        if (!charId) return { ok: false, error: '未知角色', view: view(false) }
+        if (!charId) return { ok: false, error: t('未知角色'), view: view(false) }
         const supplied = args && args.overrides
         if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
           return {
             ...profileResult(charId),
             ok: false,
-            error: 'overrides 必须是对象',
+            error: t('overrides 必须是对象'),
             view: view(false),
           }
         }
@@ -4756,7 +4801,7 @@ export function apply(
           return {
             ...profileResult(charId),
             ok: false,
-            error: unknown.length > 0 ? '包含未知角色设定字段' : '角色设定字段必须是字符串或 null',
+            error: unknown.length > 0 ? t('包含未知角色设定字段') : t('角色设定字段必须是字符串或 null'),
             view: view(false),
           }
         }
@@ -4801,7 +4846,7 @@ export function apply(
           return {
             ...profileResult(charId),
             ok: false,
-            error: '角色设定保存失败',
+            error: t('角色设定保存失败'),
             view: view(false),
           }
         }
@@ -4811,7 +4856,7 @@ export function apply(
         ensureState()
         if (ensurePreferences().enabled !== false) syncHeroine(false)
         const charId = requestedProfileCharId(args)
-        if (!charId) return { ok: false, error: '未知角色', view: view(false) }
+        if (!charId) return { ok: false, error: t('未知角色'), view: view(false) }
         const character = s.characters[charId]
         const previousProfile = effectiveProfileFor(charId)
         const previousOverrides = { ...profileOverridesFor(charId) }
@@ -4837,7 +4882,7 @@ export function apply(
           return {
             ...profileResult(charId),
             ok: false,
-            error: '角色设定保存失败',
+            error: t('角色设定保存失败'),
             view: view(false),
           }
         }
@@ -4911,11 +4956,11 @@ export function apply(
                 messages: (() => {
                   const msgs: any[] = [{
                     role: 'user',
-                    content: [{ type: 'text', text: '（场景：深海女仆工坊的会客厅，暖黄的灯光。当前角色正在和用户聊天。你只扮演当前角色，不要提到其他角色。）' }],
+                    content: [{ type: 'text', text: t('（场景：深海女仆工坊的会客厅，暖黄的灯光。当前角色正在和用户聊天。你只扮演当前角色，不要提到其他角色。）') }],
                     source: { kind: 'user' },
                   }]
                   for (const m of [...prepared.log, { role: 'user', text }].slice(-12)) {
-                    if (m.role === 'assistant' && typeof m.text === 'string' && CANNED_LINES.has(m.text.trim())) continue
+                    if (m.role === 'assistant' && typeof m.text === 'string' && isCannedLine(m.text)) continue
                     msgs.push({
                       role: m.role === 'assistant' ? 'assistant' : 'user',
                       content: [{ type: 'text', text: m.text }],
@@ -4940,7 +4985,7 @@ export function apply(
               : 'no model available'
           }
           if (!reply) {
-            reply = prepared.profile.address + '说的话，我听到啦～（今天的深海信号有点弱，但心意传达到了哦）'
+            reply = prepared.profile.address + t(CANNED_FALLBACK_TAIL)
             usedFallback = true
           }
           const emotion = await emotionPromise
@@ -5132,7 +5177,7 @@ export function apply(
         if (ensurePreferences().enabled !== false) syncHeroine()
         const requestedCharId = shortSetting(args && (args.characterId || args.charId))
         const charId = requestedCharId ? (ROSTER[requestedCharId] ? requestedCharId : null) : s.current
-        if (!charId) return { ok: false, error: '未知角色' }
+        if (!charId) return { ok: false, error: t('未知角色') }
         const character = s.characters[charId]
         const sprite = customSpriteFor(character)
         const dataUrl = sprite && typeof sprite.dataUrl === 'string' && sprite.dataUrl.startsWith('data:')
@@ -5152,11 +5197,11 @@ export function apply(
         if (ensurePreferences().enabled !== false) syncHeroine()
         const dataUrl = validCustomSprite(args && args.dataUrl)
         if (!dataUrl) {
-          return { ok: false, error: '仅支持 18MB 以内的 PNG、JPEG、WebP 或 AVIF 图片', view: view() }
+          return { ok: false, error: t('仅支持 18MB 以内的 PNG、JPEG、WebP 或 AVIF 图片'), view: view() }
         }
         const requestedCharId = shortSetting(args && (args.characterId || args.charId))
         const charId = requestedCharId ? (ROSTER[requestedCharId] ? requestedCharId : null) : s.current
-        if (!charId) return { ok: false, error: '未知角色', view: view() }
+        if (!charId) return { ok: false, error: t('未知角色'), view: view() }
         const character = s.characters[charId]
         character.customSprite = {
           dataUrl,
@@ -5177,7 +5222,7 @@ export function apply(
         if (ensurePreferences().enabled !== false) syncHeroine()
         const requestedCharId = shortSetting(args && (args.characterId || args.charId))
         const charId = requestedCharId ? (ROSTER[requestedCharId] ? requestedCharId : null) : s.current
-        if (!charId) return { ok: false, error: '未知角色', view: view() }
+        if (!charId) return { ok: false, error: t('未知角色'), view: view() }
         const character = s.characters[charId]
         const revision = nextSpriteRevision(character)
         character.customSprite = { dataUrl: null, fileName: '', revision }
@@ -5193,7 +5238,7 @@ export function apply(
         if (!option) {
           return {
             ok: false,
-            error: '当前角色不支持该内置背景',
+            error: t('当前角色不支持该内置背景'),
             view: view(),
           }
         }
@@ -5236,7 +5281,7 @@ export function apply(
         ensureState()
         const dataUrl = validCustomBackground(args && args.dataUrl)
         if (!dataUrl) {
-          return { ok: false, error: '仅支持 18MB 以内的 PNG、JPEG、WebP 或 AVIF 图片', view: view() }
+          return { ok: false, error: t('仅支持 18MB 以内的 PNG、JPEG、WebP 或 AVIF 图片'), view: view() }
         }
         const snapshot = captureBackgroundMutationSnapshot()
         s.bg = dataUrl
@@ -5280,7 +5325,7 @@ export function apply(
         const id = shortSetting(args && args.id)
         const cg = id ? findCg(id) : null
         if (!cg || cg.status !== 'ready' || typeof cg.dataUrl !== 'string' || !cg.dataUrl.startsWith('data:')) {
-          return { ok: false, error: 'CG 不存在或尚未生成完成' }
+          return { ok: false, error: t('CG 不存在或尚未生成完成') }
         }
         // The gallery list stays lightweight; multi-megabyte image payloads
         // are returned only when the client explicitly opens one CG.
@@ -5433,7 +5478,7 @@ export function apply(
         ok: false,
         retryable: true,
         workspaceResolving: false,
-        error: '缺少 characterId 或工作区会话；未修改任何角色数据。',
+        error: t('缺少 characterId 或工作区会话；未修改任何角色数据。'),
         view: isolatedView,
       }
     }
@@ -5445,8 +5490,8 @@ export function apply(
         retryable: true,
         workspaceResolving: !!sessionId,
         error: sessionId
-          ? '正在确认当前工作区，请稍后重试。此次操作未写入任何存档。'
-          : '此操作需要明确的工作区会话；此次操作未写入任何存档。',
+          ? t('正在确认当前工作区，请稍后重试。此次操作未写入任何存档。')
+          : t('此操作需要明确的工作区会话；此次操作未写入任何存档。'),
         view: isolatedView,
       }
     }
@@ -5488,7 +5533,7 @@ export function apply(
             totalBytes += chunk.length
             if (totalBytes > MAX_API_BODY_BYTES) {
               res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
-              res.end(JSON.stringify({ error: '请求体过大；上传图片请控制在 18MB 以内' }))
+              res.end(JSON.stringify({ error: t('请求体过大；上传图片请控制在 18MB 以内') }))
               return
             }
             parts.push(chunk)

@@ -9,6 +9,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { WHALE_ART } from './art.generated'
+import { LOCALES, resolveLocale, setLocale, t } from '../locales/index.ts'
 
 const CSS = [
   // ── pet ────────────────────────────────────────────────────────────────
@@ -274,11 +275,11 @@ function activateGalgameTab(): boolean {
 
 function formatCgDate(value: any): string {
   const n = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(n) || n <= 0) return '时间未记录'
+  if (!Number.isFinite(n) || n <= 0) return t('时间未记录')
   try {
     return new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   } catch (err) {
-    return '时间未记录'
+    return t('时间未记录')
   }
 }
 
@@ -349,7 +350,7 @@ async function api(action: string, args?: any): Promise<any> {
     return await res.json()
   } catch (err: any) {
     if (controller.signal.aborted) {
-      throw new Error('请求超时，请稍后重试（' + action + '）')
+      throw new Error(t('请求超时，请稍后重试（') + action + '）')
     }
     throw err
   } finally {
@@ -418,18 +419,18 @@ function rememberCgData(id: string, value: any): void {
 
 function requestCgData(id: string, sessionId?: string): Promise<any> {
   const key = String(id || '').trim()
-  if (!key) return Promise.reject(new Error('缺少 CG 图鉴编号'))
+  if (!key) return Promise.reject(new Error(t('缺少 CG 图鉴编号')))
   const cached = cachedCgData(key)
   if (cached) return Promise.resolve(cached)
   const pending = CG_DATA_PENDING.get(key)
   if (pending) return pending
   const args = normalizedEventSessionId(sessionId) ? { id: key, sessionId: normalizedEventSessionId(sessionId) } : { id: key }
   const request = api('cg-data', args).then((result) => {
-    assertApiResult(result, 'CG 图片读取失败')
+    assertApiResult(result, t('CG 图片读取失败'))
     const detail = galleryDetailItem(result, { id: key })
-    if (!detail) throw new Error('服务未返回这张 CG 的图片数据')
+    if (!detail) throw new Error(t('服务未返回这张 CG 的图片数据'))
     const returnedId = String(detail.id || key).trim()
-    if (returnedId !== key) throw new Error('CG 图片与所选图鉴条目不一致')
+    if (returnedId !== key) throw new Error(t('CG 图片与所选图鉴条目不一致'))
     const normalized = { ...detail, id: key }
     rememberCgData(key, normalized)
     return normalized
@@ -540,8 +541,8 @@ function Pet(props: { useSessions: any; onOpen: () => void }): React.ReactElemen
 
   const lookRow = lookIndex === null ? 0 : lookIndex < 8 ? 9 : 10
   const lookColumn = lookIndex === null ? 0 : lookIndex % 8
-  const label = mode === 'running' ? 'deepseek娘正在工作' : mode === 'waiting' ? 'deepseek娘正在等待你' : 'deepseek娘正在待机'
-  const hint = '点击开始galgame'
+  const label = mode === 'running' ? t('deepseek娘正在工作') : mode === 'waiting' ? t('deepseek娘正在等待你') : t('deepseek娘正在待机')
+  const hint = t('点击开始galgame')
   return React.createElement('button', {
     'aria-label': label + '，' + hint,
     className: 'whg-pet',
@@ -565,7 +566,7 @@ function Pet(props: { useSessions: any; onOpen: () => void }): React.ReactElemen
   )
 }
 
-function optionText(option: any, fallback = '未命名'): string {
+function optionText(option: any, fallback = t('未命名')): string {
   if (!option) return fallback
   return String(option.label || option.name || option.model || option.id || fallback)
 }
@@ -589,15 +590,43 @@ function parseSelectionKey(value: string): { provider: string; model: string } |
 
 function mainModelText(options: any): string {
   const main = options && options.mainSelection
-  if (!main) return '当前工作区模型'
-  return optionText(main, String(main.model || '当前工作区模型'))
+  if (!main) return t('当前工作区模型')
+  return optionText(main, String(main.model || t('当前工作区模型')))
+}
+
+/**
+ * The DSH host locale, read once at apply(). The locale service is optional
+ * here on purpose: this plugin does not inject it, so a shell that does not
+ * provide one must still load rather than fail, and simply falls back to zh-CN.
+ */
+let hostLocale: string | undefined
+
+/**
+ * Each language is named in its own language, which is why these are not
+ * translated: a reader looking for their own language recognises it there.
+ */
+const LANGUAGE_NAMES: Record<string, string> = {
+  'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
+  en: 'English',
+  ja: '日本語',
+  ko: '한국어',
+}
+
+/** Bind the active locale from the plugin's own setting plus the host locale. */
+function applyLanguage(settings: any): void {
+  setLocale(resolveLocale(settings && settings.language, hostLocale))
 }
 
 function settingsFromResult(result: any): any | null {
   if (!result || typeof result !== 'object') return null
-  if (result.settings && typeof result.settings === 'object') return result.settings
-  if ('enabled' in result && ('characterMode' in result || 'chatMode' in result)) return result
-  return null
+  // Every path that reads settings off an API result funnels through here, so
+  // this is the one place that has to keep the active locale in sync.
+  const settings = result.settings && typeof result.settings === 'object'
+    ? result.settings
+    : ('enabled' in result && ('characterMode' in result || 'chatMode' in result) ? result : null)
+  if (settings) applyLanguage(settings)
+  return settings
 }
 
 function viewFromResult(result: any): any | null {
@@ -733,7 +762,7 @@ function PluginSettingsCard(): React.ReactElement {
       setSettings(settingsFromResult(nextSettings) || nextSettings)
       setError('')
     }).catch((err) => {
-      if (alive) setError('插件设置读取失败：' + String(err && err.message ? err.message : err))
+      if (alive) setError(t('插件设置读取失败：') + String(err && err.message ? err.message : err))
     }).finally(() => {
       if (alive) setLoading(false)
     })
@@ -742,7 +771,7 @@ function PluginSettingsCard(): React.ReactElement {
       setOptions(nextOptions && typeof nextOptions === 'object' ? nextOptions : { characters: [], models: [] })
       setCatalogError('')
     }).catch((err) => {
-      if (alive) setCatalogError('模型目录暂时不可用：' + String(err && err.message ? err.message : err))
+      if (alive) setCatalogError(t('模型目录暂时不可用：') + String(err && err.message ? err.message : err))
     })
     return () => { alive = false }
   }, [])
@@ -783,23 +812,23 @@ function PluginSettingsCard(): React.ReactElement {
   function save(patch: any): void {
     if (saving) return
     setSaving(true)
-    setMessage('正在保存…')
+    setMessage(t('正在保存…'))
     setError('')
     api('settings-set', patch).then(async (result) => {
-      assertApiResult(result, '设置未被接受')
+      assertApiResult(result, t('设置未被接受'))
       let nextSettings = settingsFromResult(result)
       if (!nextSettings) {
         const refreshed = await api('settings-get')
         nextSettings = settingsFromResult(refreshed) || refreshed
       }
       setSettings(nextSettings)
-      setMessage('已保存')
+      setMessage(t('已保存'))
       window.dispatchEvent(new CustomEvent('whg:settings-changed', {
         detail: { settings: nextSettings, view: viewFromResult(result), sourceSessionId: null },
       }))
     }).catch((err) => {
       setMessage('')
-      setError('保存失败：' + String(err && err.message ? err.message : err))
+      setError(t('保存失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setSaving(false))
   }
 
@@ -814,30 +843,30 @@ function PluginSettingsCard(): React.ReactElement {
   const enabled = !settings || settings.enabled !== false
   const configuredModel = optionText(
     (options && options.configuredSelection) || (settings && settings.configuredSelection),
-    '插件配置模型',
+    t('插件配置模型'),
   )
 
   return React.createElement('li', { className: 'whg-settings-card', 'data-open': String(open) },
     React.createElement('button', {
       'aria-expanded': open,
-      'aria-label': (open ? '收起' : '展开') + '鲸鱼娘 Galgame 设置',
+      'aria-label': (open ? t('收起') : t('展开')) + t('鲸鱼娘 Galgame 设置'),
       className: 'whg-settings-head',
       onClick: () => setOpen(!open),
       type: 'button',
     },
       React.createElement('span', { className: 'whg-settings-heading' },
-        React.createElement('span', { className: 'whg-settings-name' }, '鲸鱼娘 Galgame'),
-        React.createElement('span', { className: 'whg-settings-desc' }, '控制插件启用状态，以及出场角色与台词模型。'),
+        React.createElement('span', { className: 'whg-settings-name' }, t('鲸鱼娘 Galgame')),
+        React.createElement('span', { className: 'whg-settings-desc' }, t('控制插件启用状态，以及出场角色与台词模型。')),
       ),
-      React.createElement('span', { className: 'whg-settings-status' }, loading ? '读取中' : error ? '不可用' : enabled ? '已启用' : '已关闭'),
+      React.createElement('span', { className: 'whg-settings-status' }, loading ? t('读取中') : error ? t('不可用') : enabled ? t('已启用') : t('已关闭')),
       React.createElement('span', { className: 'whg-settings-chevron', 'aria-hidden': 'true' }, '▼'),
     ),
     open
       ? React.createElement('div', { className: 'whg-settings-body' },
         React.createElement('div', { className: 'whg-settings-row' },
           React.createElement('span', { className: 'whg-settings-copy' },
-            React.createElement('strong', null, '启用插件'),
-            React.createElement('small', null, '关闭后隐藏桌宠，并暂停 galgame 对话入口内容。'),
+            React.createElement('strong', null, t('启用插件')),
+            React.createElement('small', null, t('关闭后隐藏桌宠，并暂停 galgame 对话入口内容。')),
           ),
           React.createElement('button', {
             'aria-checked': enabled,
@@ -846,15 +875,30 @@ function PluginSettingsCard(): React.ReactElement {
             onClick: () => save({ enabled: !enabled }),
             role: 'switch',
             type: 'button',
-          }, enabled ? '已开启' : '已关闭'),
+          }, enabled ? t('已开启') : t('已关闭')),
         ),
         React.createElement('label', { className: 'whg-settings-row' },
           React.createElement('span', { className: 'whg-settings-copy' },
-            React.createElement('strong', null, '小剧场取材'),
+            React.createElement('strong', null, t('界面语言')),
+            React.createElement('small', null, t('跟随 DSH 的语言设置，或在这里单独指定。DSH 目前没有繁体中文，需要时请手动选择。')),
+          ),
+          React.createElement('select', {
+            className: 'whg-settings-select',
+            disabled: loading || saving || !settings,
+            onChange: (event: any) => { save({ language: String(event.target.value) }) },
+            value: (settings && settings.language) || 'auto',
+          },
+            React.createElement('option', { value: 'auto' }, t('跟随 DSH 设置')),
+            ...LOCALES.map((id) => React.createElement('option', { key: id, value: id }, LANGUAGE_NAMES[id] || id)),
+          ),
+        ),
+        React.createElement('label', { className: 'whg-settings-row' },
+          React.createElement('span', { className: 'whg-settings-copy' },
+            React.createElement('strong', null, t('小剧场取材')),
             React.createElement('small', null,
               settings && settings.sideStoryWebAvailable === false
-                ? '当前环境没有可用的联网检索，只会使用本地任务类别。'
-                : '联网检索只发送角色对应的模型名与题材词，不含你的对话或工作内容。'),
+                ? t('当前环境没有可用的联网检索，只会使用本地任务类别。')
+                : t('联网检索只发送角色对应的模型名与题材词，不含你的对话或工作内容。')),
           ),
           React.createElement('select', {
             className: 'whg-settings-select',
@@ -862,14 +906,14 @@ function PluginSettingsCard(): React.ReactElement {
             onChange: (event: any) => { save({ sideStorySeedSource: String(event.target.value) }) },
             value: settings && settings.sideStorySeedSource === 'activity' ? 'activity' : 'auto',
           },
-            React.createElement('option', { value: 'auto' }, '优先联网检索，失败回落本地'),
-            React.createElement('option', { value: 'activity' }, '只用本地任务类别（不联网）'),
+            React.createElement('option', { value: 'auto' }, t('优先联网检索，失败回落本地')),
+            React.createElement('option', { value: 'activity' }, t('只用本地任务类别（不联网）')),
           ),
         ),
         React.createElement('label', { className: 'whg-settings-row' },
           React.createElement('span', { className: 'whg-settings-copy' },
-            React.createElement('strong', null, '小剧场冷却'),
-            React.createElement('small', null, '两场小剧场之间要等多少分钟。填 0 表示不限制。'),
+            React.createElement('strong', null, t('小剧场冷却')),
+            React.createElement('small', null, t('两场小剧场之间要等多少分钟。填 0 表示不限制。')),
           ),
           React.createElement('input', {
             className: 'whg-settings-select',
@@ -892,8 +936,8 @@ function PluginSettingsCard(): React.ReactElement {
         ),
         React.createElement('label', { className: 'whg-settings-row' },
           React.createElement('span', { className: 'whg-settings-copy' },
-            React.createElement('strong', null, '角色来源'),
-            React.createElement('small', null, '默认跟随工作区模型，也可固定为某位模型娘。'),
+            React.createElement('strong', null, t('角色来源')),
+            React.createElement('small', null, t('默认跟随工作区模型，也可固定为某位模型娘。')),
           ),
           React.createElement('select', {
             className: 'whg-settings-select',
@@ -905,17 +949,17 @@ function PluginSettingsCard(): React.ReactElement {
             },
             value: characterValue,
           },
-            React.createElement('option', { value: 'follow' }, '跟随工作区 · ' + mainModelText(options)),
+            React.createElement('option', { value: 'follow' }, t('跟随工作区 · ') + mainModelText(options)),
             characters.map((character: any, index: number) => React.createElement('option', {
               key: String(character.id || index),
               value: 'character:' + String(character.id || ''),
-            }, optionText(character, '角色 ' + (index + 1)))),
+            }, optionText(character, t('角色 ') + (index + 1)))),
           ),
         ),
         React.createElement('label', { className: 'whg-settings-row' },
           React.createElement('span', { className: 'whg-settings-copy' },
-            React.createElement('strong', null, '对话模型'),
-            React.createElement('small', null, '可继续使用插件默认模型、跟随工作区，或单独指定。'),
+            React.createElement('strong', null, t('对话模型')),
+            React.createElement('small', null, t('可继续使用插件默认模型、跟随工作区，或单独指定。')),
           ),
           React.createElement('select', {
             className: 'whg-settings-select',
@@ -931,18 +975,18 @@ function PluginSettingsCard(): React.ReactElement {
             },
             value: chatValue,
           },
-            React.createElement('option', { value: 'configured' }, '使用插件默认 · ' + configuredModel),
-            React.createElement('option', { value: 'main' }, '跟随工作区 · ' + mainModelText(options)),
+            React.createElement('option', { value: 'configured' }, t('使用插件默认 · ') + configuredModel),
+            React.createElement('option', { value: 'main' }, t('跟随工作区 · ') + mainModelText(options)),
             models.map((model: any, index: number) => React.createElement('option', {
               key: selectionKey(model) || String(index),
               value: 'model:' + selectionKey(model),
-            }, optionText(model, '模型 ' + (index + 1)))),
+            }, optionText(model, t('模型 ') + (index + 1)))),
           ),
         ),
         React.createElement('p', {
           className: 'whg-settings-message' + (error ? ' error' : ''),
           role: error ? 'alert' : 'status',
-        }, error || message || catalogError || '角色、模型和素材设置会在所有工作区共享，顶部标签也可以随时快捷切换。'),
+        }, error || message || catalogError || t('角色、模型和素材设置会在所有工作区共享，顶部标签也可以随时快捷切换。')),
       )
       : null,
   )
@@ -1034,7 +1078,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
 
   useEffect(() => {
     let alive = true
-    callApi('view').then((v) => { if (alive) { setS(v); setApiError(null) } }).catch((e) => { if (alive) setApiError('galgame 服务未就绪：' + String(e && e.message ? e.message : e)) })
+    callApi('view').then((v) => { if (alive) { setS(v); setApiError(null) } }).catch((e) => { if (alive) setApiError(t('galgame 服务未就绪：') + String(e && e.message ? e.message : e)) })
     return () => { alive = false }
   }, [props.sessionId])
 
@@ -1144,7 +1188,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     }
     let alive = true
     callApi('sprite-data', { characterId }).then((result) => {
-      assertApiResult(result, '角色立绘读取失败')
+      assertApiResult(result, t('角色立绘读取失败'))
       if (!alive) return
       const returnedId = String(result && (result.characterId || result.charId) ? (result.characterId || result.charId) : characterId)
       const dataUrl = result && typeof result.dataUrl === 'string' && result.dataUrl ? result.dataUrl : null
@@ -1441,7 +1485,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       setPluginSettings(settingsFromResult(settingsResult) || settingsResult)
     }).catch((err) => {
       if (requestId === pickerRequestSeq.current) {
-        setPickerError('插件设置读取失败：' + String(err && err.message ? err.message : err))
+        setPickerError(t('插件设置读取失败：') + String(err && err.message ? err.message : err))
       }
     })
     callModelOptions().then((options) => {
@@ -1449,7 +1493,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       setModelOptions(options && typeof options === 'object' ? options : { characters: [], models: [] })
     }).catch((err) => {
       if (requestId === pickerRequestSeq.current) {
-        setPickerError('模型列表读取失败：' + String(err && err.message ? err.message : err))
+        setPickerError(t('模型列表读取失败：') + String(err && err.message ? err.message : err))
       }
     }).finally(() => {
       if (requestId === pickerRequestSeq.current) setPickerCatalogLoading(false)
@@ -1476,7 +1520,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerLoading(true)
     setPickerError('')
     callApi('settings-set', patch).then((result) => {
-      assertApiResult(result, '切换未被接受')
+      assertApiResult(result, t('切换未被接受'))
       const nextSettings = settingsFromResult(result) || {
         ...(pluginSettings && typeof pluginSettings === 'object' ? pluginSettings : {
           enabled: s && s.enabled !== false,
@@ -1505,13 +1549,13 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             setApiError(null)
           }
         }).catch((err) => {
-          setApiError('切换已保存，但画面刷新失败：' + String(err && err.message ? err.message : err))
+          setApiError(t('切换已保存，但画面刷新失败：') + String(err && err.message ? err.message : err))
         })
       } else {
         setApiError(null)
       }
     }).catch((err) => {
-      setPickerError('切换失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('切换失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1521,24 +1565,24 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     if (!file) return
     const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/avif'])
     if (!allowedTypes.has(String(file.type || '').toLowerCase())) {
-      setPickerError('请选择 PNG、JPG、WebP 或 AVIF 图片。')
+      setPickerError(t('请选择 PNG、JPG、WebP 或 AVIF 图片。'))
       return
     }
     if (file.size > 12 * 1024 * 1024) {
-      setPickerError('图片不能超过 12 MB，请压缩后重试。')
+      setPickerError(t('图片不能超过 12 MB，请压缩后重试。'))
       return
     }
     setPickerError('')
     const reader = new FileReader()
     reader.onload = () => {
       if (typeof reader.result !== 'string') {
-        setPickerError('图片预览失败，请换一张图片。')
+        setPickerError(t('图片预览失败，请换一张图片。'))
         return
       }
       setBackgroundPreview(reader.result)
       setBackgroundFileName(file.name)
     }
-    reader.onerror = () => setPickerError('图片读取失败，请重新选择。')
+    reader.onerror = () => setPickerError(t('图片读取失败，请重新选择。'))
     reader.readAsDataURL(file)
   }
 
@@ -1547,7 +1591,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerLoading(true)
     setPickerError('')
     callApi('bg-upload', { dataUrl: backgroundPreview, fileName: backgroundFileName }).then(async (result) => {
-      assertApiResult(result, '背景未保存')
+      assertApiResult(result, t('背景未保存'))
       bgCache.current = backgroundPreview
       let nextView = viewFromResult(result)
       if (!nextView) nextView = await callApi('view')
@@ -1557,7 +1601,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       }))
       closePicker()
     }).catch((err) => {
-      setPickerError('背景保存失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('背景保存失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1567,7 +1611,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerError('')
     const action = s && s.bg === 'cg' ? 'cg-clear-bg' : 'bg-clear-custom'
     callApi(action).then(async (result) => {
-      assertApiResult(result, '背景未恢复')
+      assertApiResult(result, t('背景未恢复'))
       bgCache.current = null
       let nextView = viewFromResult(result)
       if (!nextView) nextView = await callApi('view')
@@ -1577,7 +1621,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       }))
       closePicker()
     }).catch((err) => {
-      setPickerError('恢复默认背景失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('恢复默认背景失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1586,7 +1630,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerLoading(true)
     setPickerError('')
     callApi('bg-set-builtin', { key }).then(async (result) => {
-      assertApiResult(result, '内置背景未应用')
+      assertApiResult(result, t('内置背景未应用'))
       bgCache.current = null
       let nextView = viewFromResult(result)
       if (!nextView) nextView = await callApi('view')
@@ -1596,7 +1640,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       }))
       closePicker()
     }).catch((err) => {
-      setPickerError('内置背景切换失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('内置背景切换失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1606,24 +1650,24 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     if (!file) return
     const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/avif'])
     if (!allowedTypes.has(String(file.type || '').toLowerCase())) {
-      setPickerError('请选择 PNG、JPG、WebP 或 AVIF 图片。')
+      setPickerError(t('请选择 PNG、JPG、WebP 或 AVIF 图片。'))
       return
     }
     if (file.size > 12 * 1024 * 1024) {
-      setPickerError('图片不能超过 12 MB，请压缩后重试。')
+      setPickerError(t('图片不能超过 12 MB，请压缩后重试。'))
       return
     }
     setPickerError('')
     const reader = new FileReader()
     reader.onload = () => {
       if (typeof reader.result !== 'string') {
-        setPickerError('立绘预览失败，请换一张图片。')
+        setPickerError(t('立绘预览失败，请换一张图片。'))
         return
       }
       setSpritePreview(reader.result)
       setSpriteFileName(file.name)
     }
-    reader.onerror = () => setPickerError('图片读取失败，请重新选择。')
+    reader.onerror = () => setPickerError(t('图片读取失败，请重新选择。'))
     reader.readAsDataURL(file)
   }
 
@@ -1634,7 +1678,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerLoading(true)
     setPickerError('')
     callApi('sprite-upload', { characterId, dataUrl, fileName: spriteFileName }).then(async (result) => {
-      assertApiResult(result, '角色立绘未保存')
+      assertApiResult(result, t('角色立绘未保存'))
       const savedCharacterId = String(result && (result.characterId || result.charId) ? (result.characterId || result.charId) : characterId)
       const revision = Number(result && result.revision)
       spriteCache.current[savedCharacterId] = dataUrl
@@ -1647,7 +1691,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       }))
       closePicker()
     }).catch((err) => {
-      setPickerError('立绘保存失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('立绘保存失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1657,7 +1701,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setPickerLoading(true)
     setPickerError('')
     callApi('sprite-clear', { characterId }).then(async (result) => {
-      assertApiResult(result, '默认立绘未恢复')
+      assertApiResult(result, t('默认立绘未恢复'))
       const savedCharacterId = String(result && (result.characterId || result.charId) ? (result.characterId || result.charId) : characterId)
       const revision = Number(result && result.revision)
       spriteCache.current[savedCharacterId] = null
@@ -1670,7 +1714,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       }))
       closePicker()
     }).catch((err) => {
-      setPickerError('恢复默认立绘失败：' + String(err && err.message ? err.message : err))
+      setPickerError(t('恢复默认立绘失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setPickerLoading(false))
   }
 
@@ -1678,7 +1722,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     if (!characterId) {
       setProfileLoaded(false)
       setProfileLoading(false)
-      setProfileError('当前角色未识别，暂时无法读取角色设定。')
+      setProfileError(t('当前角色未识别，暂时无法读取角色设定。'))
       return
     }
     const requestId = ++profileRequestSeq.current
@@ -1688,10 +1732,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setProfileError('')
     setProfileMessage('')
     callApi('profile-get', { characterId }).then((result) => {
-      assertApiResult(result, '角色设定读取失败')
+      assertApiResult(result, t('角色设定读取失败'))
       if (requestId !== profileRequestSeq.current) return
       const profile = profileFromResult(result)
-      if (!profile) throw new Error('服务未返回可编辑的角色设定')
+      if (!profile) throw new Error(t('服务未返回可编辑的角色设定'))
       const returnedId = String(result && (result.charId || result.characterId) ? (result.charId || result.characterId) : characterId)
       const builtIn = builtInProfileFromResult(result) || profile
       setProfileCharacterId(returnedId)
@@ -1702,7 +1746,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       setProfileLoaded(true)
     }).catch((err) => {
       if (requestId !== profileRequestSeq.current) return
-      setProfileError('角色设定读取失败：' + String(err && err.message ? err.message : err))
+      setProfileError(t('角色设定读取失败：') + String(err && err.message ? err.message : err))
     }).finally(() => {
       if (requestId === profileRequestSeq.current) setProfileLoading(false)
     })
@@ -1729,7 +1773,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setProfileError('')
     setProfileMessage('')
     callApi('profile-set', { characterId, overrides }).then(async (result) => {
-      assertApiResult(result, '角色设定未保存')
+      assertApiResult(result, t('角色设定未保存'))
       const returnedId = String(result && (result.charId || result.characterId) ? (result.charId || result.characterId) : characterId)
       const effective = profileFromResult(result) || { ...profileDraft }
       const builtIn = builtInProfileFromResult(result) || profileBuiltIn
@@ -1739,7 +1783,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         try {
           nextView = await callApi('view')
         } catch (err: any) {
-          refreshError = '设定已保存，但画面刷新失败：' + String(err && err.message ? err.message : err)
+          refreshError = t('设定已保存，但画面刷新失败：') + String(err && err.message ? err.message : err)
         }
       }
       setProfileCharacterId(returnedId)
@@ -1761,10 +1805,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           sourceSessionId: broadcastSessionId,
         },
       }))
-      setProfileMessage(refreshError ? '设定已保存；画面会在服务恢复后自动同步。' : '角色设定已保存。')
+      setProfileMessage(refreshError ? t('设定已保存；画面会在服务恢复后自动同步。') : t('角色设定已保存。'))
       setProfileError(refreshError)
     }).catch((err) => {
-      setProfileError('角色设定保存失败：' + String(err && err.message ? err.message : err))
+      setProfileError(t('角色设定保存失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setProfileSaving(false))
   }
 
@@ -1775,7 +1819,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setProfileError('')
     setProfileMessage('')
     callApi('profile-reset', { characterId }).then(async (result) => {
-      assertApiResult(result, '默认角色设定未恢复')
+      assertApiResult(result, t('默认角色设定未恢复'))
       const returnedId = String(result && (result.charId || result.characterId) ? (result.charId || result.characterId) : characterId)
       let effective = profileFromResult(result)
       let builtIn = builtInProfileFromResult(result)
@@ -1783,11 +1827,11 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       if (!effective) {
         try {
           const refreshed = await callApi('profile-get', { characterId: returnedId })
-          assertApiResult(refreshed, '默认角色设定读取失败')
+          assertApiResult(refreshed, t('默认角色设定读取失败'))
           effective = profileFromResult(refreshed)
           builtIn = builtInProfileFromResult(refreshed)
         } catch (err: any) {
-          refreshError = '默认设定已恢复，但内容刷新失败：' + String(err && err.message ? err.message : err)
+          refreshError = t('默认设定已恢复，但内容刷新失败：') + String(err && err.message ? err.message : err)
         }
       }
       let nextView = viewFromResult(result)
@@ -1795,7 +1839,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         try {
           nextView = await callApi('view')
         } catch (err: any) {
-          refreshError = refreshError || ('默认设定已恢复，但画面刷新失败：' + String(err && err.message ? err.message : err))
+          refreshError = refreshError || (t('默认设定已恢复，但画面刷新失败：') + String(err && err.message ? err.message : err))
         }
       }
       if (effective) {
@@ -1817,10 +1861,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           sourceSessionId: broadcastSessionId,
         },
       }))
-      setProfileMessage(refreshError ? '默认设定已恢复；内容会在服务恢复后自动同步。' : '已恢复该角色的默认设定。')
+      setProfileMessage(refreshError ? t('默认设定已恢复；内容会在服务恢复后自动同步。') : t('已恢复该角色的默认设定。'))
       setProfileError(refreshError)
     }).catch((err) => {
-      setProfileError('恢复默认设定失败：' + String(err && err.message ? err.message : err))
+      setProfileError(t('恢复默认设定失败：') + String(err && err.message ? err.message : err))
     }).finally(() => setProfileSaving(false))
   }
 
@@ -1954,7 +1998,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setGalleryError(null)
     callApi('cg-gallery').then((result) => {
       if (requestId !== galleryListRequestSeq.current) return
-      assertApiResult(result, 'CG 图鉴读取失败')
+      assertApiResult(result, t('CG 图鉴读取失败'))
       const metadataItems = (result && Array.isArray(result.items) ? result.items : [])
         .map(galleryMetadataItem)
         .filter((item: any) => item && item.id)
@@ -2069,7 +2113,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const mode = (pluginSettings && pluginSettings.characterMode) || s.characterMode || 'follow'
     const selectedId = (pluginSettings && pluginSettings.characterId) || s.characterId || s.current
     return React.createElement('div', {
-      'aria-label': '选择出场角色',
+      'aria-label': t('选择出场角色'),
       className: 'whg-picker',
       id: 'whg-character-picker-' + appScope,
       ref: pickerRef,
@@ -2077,18 +2121,18 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     },
       React.createElement('div', { className: 'whg-picker-head' },
         React.createElement('span', null, 'CHARACTER SOURCE'),
-        React.createElement('span', null, pickerCatalogLoading ? '读取中…' : String(characters.length + 1).padStart(2, '0')),
+        React.createElement('span', null, pickerCatalogLoading ? t('读取中…') : String(characters.length + 1).padStart(2, '0')),
       ),
       pickerOption({
         selected: mode !== 'manual',
-        title: '跟随工作区',
+        title: t('跟随工作区'),
         subtitle: mainModelText(modelOptions),
         onChoose: () => updateRuntimeSettings({ characterMode: 'follow', characterId: null }),
       }),
       characters.map((character: any, index: number) => pickerOption({
         key: String(character.id || index),
         selected: mode === 'manual' && String(selectedId) === String(character.id),
-        title: optionText(character, '角色 ' + (index + 1)),
+        title: optionText(character, t('角色 ') + (index + 1)),
         subtitle: character.model ? String(character.model) : character.description ? String(character.description) : undefined,
         onChoose: () => updateRuntimeSettings({ characterMode: 'manual', characterId: String(character.id) }),
       })),
@@ -2104,10 +2148,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const selectedKey = selectionKey(selected)
     const configuredLabel = optionText(
       modelOptions && modelOptions.configuredSelection,
-      s.configuredChatModelLabel || s.defaultChatModelLabel || s.chatModelLabel || s.lastModel || '插件配置模型',
+      s.configuredChatModelLabel || s.defaultChatModelLabel || s.chatModelLabel || s.lastModel || t('插件配置模型'),
     )
     return React.createElement('div', {
-      'aria-label': '选择对话模型',
+      'aria-label': t('选择对话模型'),
       className: 'whg-picker',
       id: 'whg-chat-picker-' + appScope,
       ref: pickerRef,
@@ -2115,17 +2159,17 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     },
       React.createElement('div', { className: 'whg-picker-head' },
         React.createElement('span', null, 'DIALOGUE MODEL'),
-        React.createElement('span', null, pickerCatalogLoading ? '读取中…' : String(models.length + 2).padStart(2, '0')),
+        React.createElement('span', null, pickerCatalogLoading ? t('读取中…') : String(models.length + 2).padStart(2, '0')),
       ),
       pickerOption({
         selected: mode === 'configured' || (!pluginSettings && !s.chatMode),
-        title: '使用插件默认模型',
+        title: t('使用插件默认模型'),
         subtitle: configuredLabel,
         onChoose: () => updateRuntimeSettings({ chatMode: 'configured', chatSelection: null }),
       }),
       pickerOption({
         selected: mode === 'main',
-        title: '跟随工作区',
+        title: t('跟随工作区'),
         subtitle: mainModelText(modelOptions),
         onChoose: () => updateRuntimeSettings({ chatMode: 'main', chatSelection: null }),
       }),
@@ -2134,7 +2178,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         return pickerOption({
           key: key || String(index),
           selected: mode === 'manual' && key === selectedKey,
-          title: optionText(model, '模型 ' + (index + 1)),
+          title: optionText(model, t('模型 ') + (index + 1)),
           subtitle: [model.provider, model.model].filter(Boolean).join(' · '),
           onChoose: () => updateRuntimeSettings({
             chatMode: 'manual',
@@ -2161,25 +2205,25 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const currentActual = hasSavedBackground ? bgCache.current : art(s && s.bg)
     const visiblePreview = backgroundPreview || currentActual
     const builtinSection = builtinOptions.length > 0
-      ? React.createElement('section', { className: 'whg-bg-builtins', 'aria-label': (s && s.name ? s.name : '当前角色') + '的内置背景' },
+      ? React.createElement('section', { className: 'whg-bg-builtins', 'aria-label': (s && s.name ? s.name : t('当前角色')) + t('的内置背景') },
         React.createElement('div', { className: 'whg-bg-builtins-head' },
-          React.createElement('span', null, '角色内置背景'),
+          React.createElement('span', null, t('角色内置背景')),
           React.createElement('span', { className: 'whg-bg-builtins-role' }, s && s.name ? s.name : ''),
         ),
         hasSavedBackground
           ? React.createElement('div', { className: 'whg-bg-override-note' },
-            backgroundMode === 'cg' ? '特殊 CG 正在覆盖角色背景。选择下方背景会退出 CG 覆盖。' : '自定义图片正在覆盖角色背景。选择下方背景会退出自定义覆盖。',
+            backgroundMode === 'cg' ? t('特殊 CG 正在覆盖角色背景。选择下方背景会退出 CG 覆盖。') : t('自定义图片正在覆盖角色背景。选择下方背景会退出自定义覆盖。'),
           )
           : null,
         React.createElement('div', { className: 'whg-bg-builtins-grid' },
           builtinOptions.map((option: any, index: number) => {
             const key = String(option.key)
-            const label = String(option.label || option.name || ('内置背景 ' + (index + 1)))
+            const label = String(option.label || option.name || (t('内置背景 ') + (index + 1)))
             const preview = art(key)
             const selected = key === currentBuiltin
             const isDefault = option.default === true || option.isDefault === true
             return React.createElement('button', {
-              'aria-label': label + (isDefault ? '，角色默认背景' : '') + (selected && hasSavedBackground ? '，退出覆盖后使用' : ''),
+              'aria-label': label + (isDefault ? t('，角色默认背景') : '') + (selected && hasSavedBackground ? t('，退出覆盖后使用') : ''),
               'aria-pressed': selected && !hasSavedBackground,
               className: 'whg-bg-builtin',
               disabled: pickerLoading,
@@ -2192,8 +2236,8 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                 : React.createElement('div', { className: 'whg-bg-builtin-img whg-bg-builtin-fallback' }, 'BACKGROUND'),
               React.createElement('span', { className: 'whg-bg-builtin-meta' },
                 React.createElement('span', { className: 'whg-bg-builtin-name' }, label),
-                isDefault ? React.createElement('span', { className: 'whg-bg-builtin-tag' }, '默认') : null,
-                selected ? React.createElement('span', { className: 'whg-bg-builtin-tag' }, hasSavedBackground ? '恢复后' : '使用中') : null,
+                isDefault ? React.createElement('span', { className: 'whg-bg-builtin-tag' }, t('默认')) : null,
+                selected ? React.createElement('span', { className: 'whg-bg-builtin-tag' }, hasSavedBackground ? t('恢复后') : t('使用中')) : null,
               ),
             )
           }),
@@ -2201,7 +2245,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       )
       : null
     return React.createElement('div', {
-      'aria-label': '修改 galgame 背景图',
+      'aria-label': t('修改 galgame 背景图'),
       className: 'whg-picker right whg-bg-picker',
       id: 'whg-background-picker-' + appScope,
       ref: pickerRef,
@@ -2209,13 +2253,13 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     },
       React.createElement('div', { className: 'whg-picker-head' },
         React.createElement('span', null, 'BACKGROUND FILE'),
-        React.createElement('span', null, backgroundPreview ? '预览' : hasSavedBackground ? '覆盖中' : '角色背景'),
+        React.createElement('span', null, backgroundPreview ? t('预览') : hasSavedBackground ? t('覆盖中') : t('角色背景')),
       ),
       visiblePreview
-        ? React.createElement('img', { className: 'whg-bg-preview', src: visiblePreview, alt: backgroundPreview ? '待应用背景预览' : '当前 galgame 背景' })
-        : React.createElement('div', { className: 'whg-bg-empty' }, '选择一张本地图片后在这里预览'),
+        ? React.createElement('img', { className: 'whg-bg-preview', src: visiblePreview, alt: backgroundPreview ? t('待应用背景预览') : t('当前 galgame 背景') })
+        : React.createElement('div', { className: 'whg-bg-empty' }, t('选择一张本地图片后在这里预览')),
       builtinSection,
-      React.createElement('div', { className: 'whg-picker-note' }, '内置背景会随角色切换。上传的图片会在所有工作区共享，并持续覆盖角色背景；建议使用横向 16:9 图片。'),
+      React.createElement('div', { className: 'whg-picker-note' }, t('内置背景会随角色切换。上传的图片会在所有工作区共享，并持续覆盖角色背景；建议使用横向 16:9 图片。')),
       React.createElement('input', {
         accept: 'image/png,image/jpeg,image/webp,image/avif',
         className: 'whg-bg-file',
@@ -2229,14 +2273,14 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           disabled: pickerLoading,
           onClick: () => bgFileRef.current?.click(),
           type: 'button',
-        }, backgroundPreview ? '重新选择' : '上传图片'),
+        }, backgroundPreview ? t('重新选择') : t('上传图片')),
         backgroundPreview
           ? React.createElement('button', {
             className: 'whg-cg-btn',
             disabled: pickerLoading,
             onClick: applyBackgroundUpload,
             type: 'button',
-          }, pickerLoading ? '保存中…' : '应用这张背景')
+          }, pickerLoading ? t('保存中…') : t('应用这张背景'))
           : null,
         backgroundPreview
           ? React.createElement('button', {
@@ -2244,7 +2288,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             disabled: pickerLoading,
             onClick: () => { setBackgroundPreview(null); setBackgroundFileName(''); setPickerError('') },
             type: 'button',
-          }, '取消预览')
+          }, t('取消预览'))
           : null,
         hasSavedBackground
           ? React.createElement('button', {
@@ -2252,7 +2296,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             disabled: pickerLoading,
             onClick: restoreDefaultBackground,
             type: 'button',
-          }, '恢复默认')
+          }, t('恢复默认'))
           : null,
       ),
       pickerError ? React.createElement('div', { className: 'whg-bg-error', role: 'alert' }, pickerError) : null,
@@ -2272,7 +2316,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       act('side-story', topic ? { op: 'start', topic } : { op: 'start' })
     }
     return React.createElement('div', {
-      'aria-label': '开一场小剧场',
+      'aria-label': t('开一场小剧场'),
       className: 'whg-picker right whg-skit-picker',
       id: 'whg-skit-picker-' + appScope,
       ref: pickerRef,
@@ -2280,14 +2324,14 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     },
       React.createElement('div', { className: 'whg-picker-head' },
         React.createElement('span', null, 'SIDE ACT'),
-        React.createElement('span', null, cooling ? '冷却中 · 约 ' + mins + ' 分钟' : '可开演'),
+        React.createElement('span', null, cooling ? t('冷却中 · 约 ') + mins + t(' 分钟') : t('可开演')),
       ),
       React.createElement('p', { className: 'whg-side-seed' },
-        '不填就让她们自己找话题：优先看看外面在聊什么，找不到就聊主人最近在忙的事。'),
+        t('不填就让她们自己找话题：优先看看外面在聊什么，找不到就聊主人最近在忙的事。')),
       React.createElement('input', {
         className: 'whg-input',
         value: skitTopic,
-        placeholder: '想让她们聊点什么？（可留空）',
+        placeholder: t('想让她们聊点什么？（可留空）'),
         disabled: busy || cooling,
         onChange: (event: any) => { setSkitTopic(event.target.value) },
         onKeyDown: (event: any) => { if (event.key === 'Enter') start() },
@@ -2297,7 +2341,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         disabled: busy || cooling,
         onClick: start,
         type: 'button',
-      }, cooling ? '冷却中' : '开演'),
+      }, cooling ? t('冷却中') : t('开演')),
     )
   }
 
@@ -2307,7 +2351,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const visiblePreview = spritePreview || customSprite || defaultSprite
     const hasSavedSprite = !!customSprite || !!(s && (s.hasCustomSprite === true || s.customSprite === true || s.spriteMode === 'custom'))
     return React.createElement('div', {
-      'aria-label': '修改' + (s && s.name ? s.name : '当前角色') + '的角色立绘',
+      'aria-label': t('修改') + (s && s.name ? s.name : t('当前角色')) + t('的角色立绘'),
       className: 'whg-picker right whg-sprite-picker',
       id: 'whg-sprite-picker-' + appScope,
       ref: pickerRef,
@@ -2315,19 +2359,19 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     },
       React.createElement('div', { className: 'whg-picker-head' },
         React.createElement('span', null, 'CHARACTER PORTRAIT'),
-        React.createElement('span', null, spritePreview ? '预览' : hasSavedSprite ? '使用中' : '默认'),
+        React.createElement('span', null, spritePreview ? t('预览') : hasSavedSprite ? t('使用中') : t('默认')),
       ),
       visiblePreview
         ? React.createElement('div', { className: 'whg-sprite-preview-shell' },
           React.createElement('img', {
-            alt: spritePreview ? '待应用立绘预览' : (s && s.name ? s.name : '当前角色') + '的当前立绘',
+            alt: spritePreview ? t('待应用立绘预览') : (s && s.name ? s.name : t('当前角色')) + t('的当前立绘'),
             className: 'whg-sprite-preview',
             src: visiblePreview,
           }),
         )
-        : React.createElement('div', { className: 'whg-bg-empty' }, '选择一张本地图片后在这里预览'),
+        : React.createElement('div', { className: 'whg-bg-empty' }, t('选择一张本地图片后在这里预览')),
       React.createElement('div', { className: 'whg-picker-note' },
-        '当前角色 · ' + (s && s.name ? s.name : '未识别') + '。立绘按角色分别保存，并在所有工作区共享；建议使用透明背景的竖向图片。',
+        t('当前角色 · ') + (s && s.name ? s.name : t('未识别')) + t('。立绘按角色分别保存，并在所有工作区共享；建议使用透明背景的竖向图片。'),
       ),
       React.createElement('input', {
         accept: 'image/png,image/jpeg,image/webp,image/avif',
@@ -2342,28 +2386,28 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           disabled: pickerLoading,
           onClick: () => spriteFileRef.current?.click(),
           type: 'button',
-        }, spritePreview ? '重新选择' : '上传图片'),
+        }, spritePreview ? t('重新选择') : t('上传图片')),
         spritePreview
           ? React.createElement('button', {
             className: 'whg-cg-btn',
             disabled: pickerLoading,
             onClick: applySpriteUpload,
             type: 'button',
-          }, pickerLoading ? '保存中…' : '应用这张立绘')
+          }, pickerLoading ? t('保存中…') : t('应用这张立绘'))
           : null,
         React.createElement('button', {
           className: 'whg-btn',
           disabled: pickerLoading,
           onClick: () => closePicker(),
           type: 'button',
-        }, '取消'),
+        }, t('取消')),
         hasSavedSprite
           ? React.createElement('button', {
             className: 'whg-btn',
             disabled: pickerLoading,
             onClick: restoreDefaultSprite,
             type: 'button',
-          }, '恢复默认')
+          }, t('恢复默认'))
           : null,
       ),
       pickerError ? React.createElement('div', { className: 'whg-bg-error', role: 'alert' }, pickerError) : null,
@@ -2404,28 +2448,28 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
 
   function profileEditor(): React.ReactElement {
     if (profileLoading) {
-      return React.createElement('div', { className: 'whg-profile-loading', role: 'status' }, '正在调取角色档案……')
+      return React.createElement('div', { className: 'whg-profile-loading', role: 'status' }, t('正在调取角色档案……'))
     }
     if (!profileLoaded) {
       return React.createElement('div', { className: 'whg-archive-error', role: 'alert' },
-        profileError || '角色设定暂时无法读取。',
+        profileError || t('角色设定暂时无法读取。'),
         React.createElement('button', {
           className: 'whg-btn',
           onClick: () => loadCharacterProfile(String(s && s.current ? s.current : '')),
           type: 'button',
-        }, '重新读取'),
+        }, t('重新读取')),
       )
     }
     const dirty = PROFILE_KEYS.some((key) => profileDraft[key] !== profileBaseline[key])
     const message = profileError
       || profileMessage
-      || (dirty ? '有未保存的修改。' : profileHasOverrides ? '当前角色使用自定义设定。' : '当前角色使用默认设定。')
+      || (dirty ? t('有未保存的修改。') : profileHasOverrides ? t('当前角色使用自定义设定。') : t('当前角色使用默认设定。'))
     return React.createElement(React.Fragment, null,
       React.createElement('div', { className: 'whg-profile-intro' },
-        React.createElement('strong', null, (s && s.name ? s.name : '当前角色') + ' · 独立角色档案'),
-        '。设定按角色分别保存，并在所有工作区共享；保存或恢复默认都不会改变好感度、记忆或角色立绘，已经开始互动的对话历史也不会被改写。',
+        React.createElement('strong', null, (s && s.name ? s.name : t('当前角色')) + t(' · 独立角色档案')),
+        t('。设定按角色分别保存，并在所有工作区共享；保存或恢复默认都不会改变好感度、记忆或角色立绘，已经开始互动的对话历史也不会被改写。'),
         React.createElement('span', { className: 'whg-profile-guard' },
-          '若尚未开始互动，编辑会原位更新当前开场问候；开始对话后不再改写历史。安全规则与单句回复限制始终保留。',
+          t('若尚未开始互动，编辑会原位更新当前开场问候；开始对话后不再改写历史。安全规则与单句回复限制始终保留。'),
         ),
       ),
       React.createElement('form', {
@@ -2436,31 +2480,31 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         React.createElement('section', { 'aria-labelledby': 'whg-profile-heading-' + appScope, className: 'whg-profile-section' },
           React.createElement('div', { className: 'whg-profile-section-head', id: 'whg-profile-heading-' + appScope },
             React.createElement('strong', null, 'DOSSIER HEADING'),
-            React.createElement('span', null, '姓名牌与彼此称呼'),
+            React.createElement('span', null, t('姓名牌与彼此称呼')),
           ),
           React.createElement('div', { className: 'whg-profile-head-fields' },
-            profileField('displayName', '角色昵称', '显示在标题、姓名牌与对话记录中。'),
-            profileField('address', '对用户称呼', '角色在台词中如何称呼你。'),
+            profileField('displayName', t('角色昵称'), t('显示在标题、姓名牌与对话记录中。')),
+            profileField('address', t('对用户称呼'), t('角色在台词中如何称呼你。')),
           ),
         ),
         React.createElement('section', { 'aria-labelledby': 'whg-profile-core-' + appScope, className: 'whg-profile-section' },
           React.createElement('div', { className: 'whg-profile-section-head', id: 'whg-profile-core-' + appScope },
             React.createElement('strong', null, 'CHARACTER CORE'),
-            React.createElement('span', null, '主要对话依据'),
+            React.createElement('span', null, t('主要对话依据')),
           ),
           React.createElement('div', { className: 'whg-profile-main-fields' },
-            profileField('persona', '性格', '角色的性格、价值取向与互动边界。', true),
-            profileField('tone', '语气', '措辞、节奏、口癖等表达偏好。', true),
+            profileField('persona', t('性格'), t('角色的性格、价值取向与互动边界。'), true),
+            profileField('tone', t('语气'), t('措辞、节奏、口癖等表达偏好。'), true),
           ),
         ),
         React.createElement('section', { 'aria-labelledby': 'whg-profile-scenes-' + appScope, className: 'whg-profile-section' },
           React.createElement('div', { className: 'whg-profile-section-head', id: 'whg-profile-scenes-' + appScope },
             React.createElement('strong', null, 'SCENE NOTES'),
-            React.createElement('span', null, '开场与纪念 CG'),
+            React.createElement('span', null, t('开场与纪念 CG')),
           ),
           React.createElement('div', { className: 'whg-profile-secondary-fields' },
-            profileField('greeting', '首次问候', '尚未开始互动时可更新当前开场问候；已有真实对话后不会改写。', true),
-            profileField('visual', 'CG 外观描述', '用于生成升级纪念 CG，不会更换当前角色立绘。', true),
+            profileField('greeting', t('首次问候'), t('尚未开始互动时可更新当前开场问候；已有真实对话后不会改写。'), true),
+            profileField('visual', t('CG 外观描述'), t('用于生成升级纪念 CG，不会更换当前角色立绘。'), true),
           ),
         ),
         React.createElement('div', { className: 'whg-profile-actions' },
@@ -2468,14 +2512,14 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             className: 'whg-cg-btn',
             disabled: profileSaving || !dirty,
             type: 'submit',
-          }, profileSaving ? '保存中…' : '保存设定'),
+          }, profileSaving ? t('保存中…') : t('保存设定')),
           React.createElement('button', {
             className: 'whg-btn',
             disabled: profileSaving || (!profileHasOverrides && !dirty),
             onClick: resetCharacterProfile,
-            title: '只恢复当前角色的六项设定，不清除其他存档内容',
+            title: t('只恢复当前角色的六项设定，不清除其他存档内容'),
             type: 'button',
-          }, profileSaving ? '处理中…' : '恢复默认'),
+          }, profileSaving ? t('处理中…') : t('恢复默认')),
           React.createElement('p', {
             className: 'whg-profile-message' + (profileError ? ' error' : ''),
             role: profileError ? 'alert' : 'status',
@@ -2502,11 +2546,11 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       body = profileEditor()
     } else if (isSkits) {
       body = skitLogError
-        ? React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, '小剧场记录读取失败：' + skitLogError)
+        ? React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, t('小剧场记录读取失败：') + skitLogError)
         : skitLogLoading
-          ? React.createElement('div', { className: 'whg-archive-empty' }, '正在翻出后台的演出记录……')
+          ? React.createElement('div', { className: 'whg-archive-empty' }, t('正在翻出后台的演出记录……'))
           : skitLog.length === 0
-            ? React.createElement('div', { className: 'whg-archive-empty' }, '还没有演过小剧场。等主人忙点什么，她们就有话题了。')
+            ? React.createElement('div', { className: 'whg-archive-empty' }, t('还没有演过小剧场。等主人忙点什么，她们就有话题了。'))
             : React.createElement('div', { className: 'whg-skit-log' },
               skitLog.map((skit: any) => React.createElement('section', { className: 'whg-skit', key: String(skit.id) },
                 React.createElement('header', { className: 'whg-skit-head' },
@@ -2530,28 +2574,28 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                     },
                     type: 'button',
                   }, skit.cgStatus === 'ready'
-                    ? '合影已生成 · 见 CG图鉴'
+                    ? t('合影已生成 · 见 CG图鉴')
                     : skit.cgStatus === 'generating'
-                      ? '合影绘制中…'
+                      ? t('合影绘制中…')
                       : skit.cgStatus === 'failed'
-                        ? '合影生成失败'
-                        : '生成这场的合影 CG')
+                        ? t('合影生成失败')
+                        : t('生成这场的合影 CG'))
                   : null,
                 React.createElement('div', { className: 'whg-history' },
                   (skit.lines || []).map((line: any, index: number) => React.createElement('div', {
                     className: 'whg-history-row ' + String(line.who || 'narrator'),
                     key: index,
                   },
-                    React.createElement('div', { className: 'whg-history-who' }, line.name || '旁白'),
+                    React.createElement('div', { className: 'whg-history-who' }, line.name || t('旁白')),
                     React.createElement('p', { className: 'whg-history-text' }, line.text || ''),
                   ))),
               )))
     } else if (isHistory) {
       body = history.length === 0
-        ? React.createElement('div', { className: 'whg-archive-empty' }, '还没有对话记录。和' + s.name + '说句话，第一份深海档案就会在这里归档。')
+        ? React.createElement('div', { className: 'whg-archive-empty' }, t('还没有对话记录。和') + s.name + t('说句话，第一份深海档案就会在这里归档。'))
         : React.createElement('div', { className: 'whg-history' },
           history.map((line: any, index: number) => {
-            const who = line && line.who === 'heroine' ? s.name : line && line.who === 'user' ? '主人' : '旁白'
+            const who = line && line.who === 'heroine' ? s.name : line && line.who === 'user' ? t('主人') : t('旁白')
             const kind = line && line.who ? String(line.who) : 'narrator'
             return React.createElement('div', { className: 'whg-history-row ' + kind, key: index + '-' + kind },
               React.createElement('div', { className: 'whg-history-who' }, who),
@@ -2565,25 +2609,25 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           className: 'whg-archive-back',
           onClick: closeGalleryDetail,
           type: 'button',
-        }, '← 返回图鉴'),
+        }, t('← 返回图鉴')),
         galleryDetailLoading
-          ? React.createElement('div', { className: 'whg-archive-empty', role: 'status' }, '正在读取这张特殊 CG……')
+          ? React.createElement('div', { className: 'whg-archive-empty', role: 'status' }, t('正在读取这张特殊 CG……'))
           : galleryDetailError
             ? React.createElement('div', { className: 'whg-archive-error', role: 'alert' },
-              'CG 图片读取失败：' + galleryDetailError,
+              t('CG 图片读取失败：') + galleryDetailError,
               React.createElement('button', {
                 className: 'whg-btn',
                 onClick: () => openGalleryDetail(gallerySelected),
                 type: 'button',
-              }, '重新读取'),
+              }, t('重新读取')),
             )
             : gallerySelected.dataUrl
               ? React.createElement('img', {
                 className: 'whg-gallery-full',
                 src: gallerySelected.dataUrl,
-                alt: (gallerySelected.name || s.name) + '的特殊CG',
+                alt: (gallerySelected.name || s.name) + t('的特殊CG'),
               })
-              : React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, '这张 CG 暂时无法读取。'),
+              : React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, t('这张 CG 暂时无法读取。')),
         React.createElement('div', { className: 'whg-gallery-caption' },
           React.createElement('strong', null, 'Lv.' + (gallerySelected.level || '?')),
           React.createElement('span', null, (gallerySelected.name || s.name) + ' · ' + formatCgDate(gallerySelected.at)),
@@ -2596,21 +2640,21 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           disabled: busy || gallerySelected.savedAsBg === true,
           onClick: () => saveGalleryBackground(gallerySelected),
           type: 'button',
-        }, gallerySelected.savedAsBg ? '当前galgame背景' : '设为galgame背景'),
+        }, gallerySelected.savedAsBg ? t('当前galgame背景') : t('设为galgame背景')),
       )
     } else if (galleryLoading) {
-      body = React.createElement('div', { className: 'whg-archive-empty', role: 'status' }, '正在打开深海图鉴柜……')
+      body = React.createElement('div', { className: 'whg-archive-empty', role: 'status' }, t('正在打开深海图鉴柜……'))
     } else if (galleryError) {
       body = React.createElement('div', { className: 'whg-archive-error', role: 'alert' },
-        'CG 图鉴读取失败：' + galleryError,
-        React.createElement('button', { className: 'whg-btn', onClick: loadGallery, type: 'button' }, '重新读取'),
+        t('CG 图鉴读取失败：') + galleryError,
+        React.createElement('button', { className: 'whg-btn', onClick: loadGallery, type: 'button' }, t('重新读取')),
       )
     } else if (galleryItems.length === 0) {
-      body = React.createElement('div', { className: 'whg-archive-empty' }, '图鉴柜还是空的。提升等级后，收到的特殊 CG 会依角色分别收藏在这里。')
+      body = React.createElement('div', { className: 'whg-archive-empty' }, t('图鉴柜还是空的。提升等级后，收到的特殊 CG 会依角色分别收藏在这里。'))
     } else {
       body = React.createElement('div', { className: 'whg-gallery' },
         galleryItems.map((item: any, index: number) => React.createElement('button', {
-          'aria-label': '查看' + (item.name || s.name) + ' Lv.' + (item.level || '?') + ' 特殊CG',
+          'aria-label': t('查看') + (item.name || s.name) + ' Lv.' + (item.level || '?') + t(' 特殊CG'),
           className: 'whg-gallery-card',
           key: item.id || index,
           onClick: () => openGalleryDetail(item),
@@ -2620,7 +2664,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             ? React.createElement('img', { className: 'whg-gallery-thumb', src: item.dataUrl, alt: '', loading: 'lazy' })
             : React.createElement('div', { className: 'whg-gallery-thumb whg-gallery-placeholder' }, 'CG'),
           item.savedAsBg
-            ? React.createElement('span', { className: 'whg-gallery-bg' }, '背景中')
+            ? React.createElement('span', { className: 'whg-gallery-bg' }, t('背景中'))
             : null,
           React.createElement('span', { className: 'whg-gallery-meta' },
             React.createElement('span', { className: 'whg-gallery-level' }, 'Lv.' + (item.level || '?')),
@@ -2646,7 +2690,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         React.createElement('header', { className: 'whg-archive-head' },
           React.createElement('div', { className: 'whg-archive-heading' },
             React.createElement('div', { className: 'whg-archive-kicker' }, kicker),
-            React.createElement('h2', { className: 'whg-archive-title', id: 'whg-archive-title-' + appScope }, isProfile ? '角色设定' : isHistory ? '对话历史' : isSkits ? '小剧场' : 'CG图鉴'),
+            React.createElement('h2', { className: 'whg-archive-title', id: 'whg-archive-title-' + appScope }, isProfile ? t('角色设定') : isHistory ? t('对话历史') : isSkits ? t('小剧场') : t('CG图鉴')),
             // Chat log and skits are two views of the same archive, so they are
             // tabs in here rather than two more buttons in an already tight bar.
             isHistory || isSkits
@@ -2657,7 +2701,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                   onClick: () => { setArchivePanel('history') },
                   role: 'tab',
                   type: 'button',
-                }, '对话历史'),
+                }, t('对话历史')),
                 React.createElement('button', {
                   'aria-selected': isSkits,
                   className: 'whg-archive-tab' + (isSkits ? ' active' : ''),
@@ -2667,12 +2711,12 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                   },
                   role: 'tab',
                   type: 'button',
-                }, '小剧场'),
+                }, t('小剧场')),
               )
               : null,
           ),
           React.createElement('button', {
-            'aria-label': '关闭' + (isProfile ? '角色设定' : isHistory ? '对话历史' : isSkits ? '小剧场' : 'CG图鉴'),
+            'aria-label': t('关闭') + (isProfile ? t('角色设定') : isHistory ? t('对话历史') : isSkits ? t('小剧场') : t('CG图鉴')),
             className: 'whg-archive-close',
             onClick: closeArchive,
             ref: archiveCloseRef,
@@ -2695,7 +2739,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const characterMode = (pluginSettings && pluginSettings.characterMode) || s.characterMode || 'follow'
     const chatMode = (pluginSettings && pluginSettings.chatMode) || s.chatMode || 'configured'
     return React.createElement('div', { className: 'whg-top' },
-      React.createElement('span', { className: 'whg-title' }, '与' + s.name + '的galgame'),
+      React.createElement('span', { className: 'whg-title' }, t('与') + s.name + t('的galgame')),
       React.createElement('div', { className: 'whg-chip-wrap' },
         React.createElement('button', {
           'aria-controls': 'whg-character-picker-' + appScope,
@@ -2703,12 +2747,12 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           'aria-haspopup': 'listbox',
           className: 'whg-chip whg-chip-button',
           onClick: (event: any) => openPicker('character', event.currentTarget),
-          title: '点击切换出场角色。当前' + (characterMode === 'manual' ? '已固定' : '跟随工作区') + '：' + (characterModel || '未识别'),
+          title: t('点击切换出场角色。当前') + (characterMode === 'manual' ? t('已固定') : t('跟随工作区')) + '：' + (characterModel || t('未识别')),
           type: 'button',
         },
           React.createElement('span', { className: 'whg-dot' + (s.modelOnline ? '' : ' off') }),
-          React.createElement('span', null, '角色来源 · '),
-          React.createElement('strong', null, characterModel || '未识别'),
+          React.createElement('span', null, t('角色来源 · ')),
+          React.createElement('strong', null, characterModel || t('未识别')),
           React.createElement('span', { className: 'whg-chip-caret', 'aria-hidden': 'true' }, '▼'),
         ),
         characterPicker(),
@@ -2720,12 +2764,12 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           'aria-haspopup': 'listbox',
           className: 'whg-chip whg-chip-button',
           onClick: (event: any) => openPicker('chat', event.currentTarget),
-          title: '点击切换 galgame 对话模型。当前模式：' + (chatMode === 'manual' ? '单独指定' : chatMode === 'main' ? '跟随工作区' : '插件默认') + '；实际使用：' + (chatModel || '离线'),
+          title: t('点击切换 galgame 对话模型。当前模式：') + (chatMode === 'manual' ? t('单独指定') : chatMode === 'main' ? t('跟随工作区') : t('插件默认')) + t('；实际使用：') + (chatModel || t('离线')),
           type: 'button',
         },
           React.createElement('span', { className: 'whg-dot' + (chatModel && !s.fallbackUsed ? '' : ' off') }),
-          React.createElement('span', null, '实际对话 · '),
-          React.createElement('strong', null, chatModel || '离线'),
+          React.createElement('span', null, t('实际对话 · ')),
+          React.createElement('strong', null, chatModel || t('离线')),
           React.createElement('span', { className: 'whg-chip-caret', 'aria-hidden': 'true' }, '▼'),
         ),
         chatPicker(),
@@ -2740,7 +2784,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             className: 'whg-btn',
             onClick: (event: any) => openPicker('background', event.currentTarget),
             type: 'button',
-          }, '背景图'),
+          }, t('背景图')),
           backgroundPicker(),
         ),
         React.createElement('div', { className: 'whg-chip-wrap' },
@@ -2750,9 +2794,9 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             'aria-haspopup': 'dialog',
             className: 'whg-btn',
             onClick: (event: any) => openPicker('sprite', event.currentTarget),
-            title: '为' + (s.name || '当前角色') + '上传本地角色立绘',
+            title: t('为') + (s.name || t('当前角色')) + t('上传本地角色立绘'),
             type: 'button',
-          }, '角色立绘'),
+          }, t('角色立绘')),
           spritePicker(),
         ),
         React.createElement('button', {
@@ -2761,22 +2805,22 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           'aria-haspopup': 'dialog',
           className: 'whg-btn',
           onClick: (event: any) => openArchive('profile', event.currentTarget),
-          title: '修改' + (s.name || '当前角色') + '的昵称、称呼、问候、性格、语气与 CG 外观描述',
+          title: t('修改') + (s.name || t('当前角色')) + t('的昵称、称呼、问候、性格、语气与 CG 外观描述'),
           type: 'button',
-        }, '角色设定'),
+        }, t('角色设定')),
         React.createElement('button', {
           'aria-expanded': archivePanel === 'history',
           className: 'whg-btn',
           onClick: (event: any) => openArchive('history', event.currentTarget),
           type: 'button',
-        }, '对话历史'),
+        }, t('对话历史')),
         React.createElement('button', {
           'aria-expanded': archivePanel === 'gallery',
           className: 'whg-btn',
           onClick: (event: any) => openArchive('gallery', event.currentTarget),
           type: 'button',
         },
-          'CG图鉴',
+          t('CG图鉴'),
           galleryCount > 0 ? React.createElement('span', { className: 'whg-count' }, galleryCount) : null,
         ),
         React.createElement('div', { className: 'whg-chip-wrap' },
@@ -2793,12 +2837,12 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
               disabled: busy || active || side.available === false,
               onClick: (event: any) => openPicker('skit', event.currentTarget),
               title: active
-                ? '小剧场正在上演'
+                ? t('小剧场正在上演')
                 : cooling
-                  ? '小剧场冷却中，约 ' + mins + ' 分钟后可再开一场'
-                  : '让工坊里的同事们演一段小剧场，可以自己指定话题',
+                  ? t('小剧场冷却中，约 ') + mins + t(' 分钟后可再开一场')
+                  : t('让工坊里的同事们演一段小剧场，可以自己指定话题'),
               type: 'button',
-            }, '小剧场')
+            }, t('小剧场'))
           })(),
           skitPicker(),
         ),
@@ -2807,25 +2851,25 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           className: 'whg-btn',
           disabled: busy,
           onClick: () => act('pet-set', { enabled: !petEnabled }),
-          title: petEnabled ? '关闭桌宠，避免与其他悬浮插件冲突' : '开启可跳转 galgame 的桌宠',
+          title: petEnabled ? t('关闭桌宠，避免与其他悬浮插件冲突') : t('开启可跳转 galgame 的桌宠'),
           type: 'button',
-        }, '桌宠 · ' + (petEnabled ? '开' : '关')),
+        }, t('桌宠 · ') + (petEnabled ? t('开') : t('关'))),
         React.createElement('button', {
           className: 'whg-btn',
-          title: '重新开始（清零等级与好感度）',
+          title: t('重新开始（清零等级与好感度）'),
           onClick: (e: any) => {
             e.stopPropagation()
             if (armReset) { setArmReset(false); act('reset') } else { setArmReset(true) }
           },
           type: 'button',
-        }, armReset ? '确认?' : '↺'),
+        }, armReset ? t('确认?') : '↺'),
         showBack
           ? React.createElement('button', {
             className: 'whg-btn back',
-            title: '回到办公区（角色会继续在桌宠状态陪你）',
+            title: t('回到办公区（角色会继续在桌宠状态陪你）'),
             onClick: (e: any) => { e.stopPropagation(); setOpen(false) },
             type: 'button',
-          }, '返回办公区')
+          }, t('返回办公区'))
           : null,
       ),
     )
@@ -2835,10 +2879,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const code = s && typeof s.sideStoryError === 'string' ? s.sideStoryError : ''
     if (!code) return null
     const message = code === 'no-seed'
-      ? '工坊今天很安静，等主人忙点什么之后再来看看吧。'
+      ? t('工坊今天很安静，等主人忙点什么之后再来看看吧。')
       : code === 'cooldown'
-        ? '刚热闹过一场，让她们缓一缓。'
-        : '这次没编出像样的短剧，稍后再试一次吧。'
+        ? t('刚热闹过一场，让她们缓一缓。')
+        : t('这次没编出像样的短剧，稍后再试一次吧。')
     return React.createElement('div', { className: 'whg-toast', role: 'status' }, '🎭 ' + message)
   }
 
@@ -2938,7 +2982,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     const isNarrator = !beat || beat.speaker === 'narrator'
     const isUser = !!beat && beat.speaker === 'user'
     const member = isNarrator || isUser ? null : scene.cast.find((row: any) => row.id === beat.speaker)
-    const plateLabel = isUser ? '主人' : isNarrator ? '旁白' : (member ? member.name : '???')
+    const plateLabel = isUser ? t('主人') : isNarrator ? t('旁白') : (member ? member.name : '???')
     const plateColor = isUser ? '#ff9cc8' : isNarrator ? '#8fb4dd' : (member ? member.color : '#8fb4dd')
     const atEnd = sideStoryAtEnd(scene)
     // The server offers choices only at the interlude the master is standing in,
@@ -2952,7 +2996,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           disabled: busy,
           onClick: () => { act('side-story', { op: 'advance' }) },
           type: 'button',
-        }, '继续 ▸'))
+        }, t('继续 ▸')))
     } else if (offered.length === 0) {
       controls = React.createElement('div', { className: 'whg-choices' },
         React.createElement('button', {
@@ -2960,7 +3004,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           disabled: busy,
           onClick: () => { act('side-story', { op: 'close' }) },
           type: 'button',
-        }, '回到日常'))
+        }, t('回到日常')))
     } else {
       // Deltas stay hidden until the choice is made; the closing beat reveals
       // who warmed up and who did not.
@@ -2984,7 +3028,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
           React.createElement('input', {
             className: 'whg-input',
             value: skitText,
-            placeholder: '或者，你自己开口说……',
+            placeholder: t('或者，你自己开口说……'),
             disabled: busy,
             onChange: (event: any) => { setSkitText(event.target.value) },
             onKeyDown: (event: any) => { if (event.key === 'Enter') speak() },
@@ -2994,7 +3038,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
             disabled: busy || !skitText.trim(),
             onClick: speak,
             type: 'button',
-          }, '说'),
+          }, t('说')),
         ),
       )
     }
@@ -3010,8 +3054,8 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     return React.createElement('div', { id: 'whg-panel', className: 'whg-panel' },
       React.createElement('div', { className: 'whg-plate', style: { background: plateColor } }, plateLabel),
       React.createElement('div', { className: 'whg-side-seed' },
-        React.createElement('span', { className: 'whg-side-badge' }, '小剧场 · 工坊传闻'),
-        scene.seed && scene.seed.summary ? scene.seed.summary : '今天工坊里有点热闹。'),
+        React.createElement('span', { className: 'whg-side-badge' }, t('小剧场 · 工坊传闻')),
+        scene.seed && scene.seed.summary ? scene.seed.summary : t('今天工坊里有点热闹。')),
       React.createElement('div', {
         key: 'side-' + scene.id + '-' + scene.cursor,
         className: 'whg-line-now ' + (isUser ? 'user' : isNarrator ? 'narrator' : 'heroine'),
@@ -3026,7 +3070,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     if (activeScene) return sideStoryDialogue(activeScene)
     const last = lastLine()
     const plateLabel = last
-      ? (last.who === 'heroine' ? s.name : last.who === 'user' ? '主人' : '旁白')
+      ? (last.who === 'heroine' ? s.name : last.who === 'user' ? t('主人') : t('旁白'))
       : s.name
     const plateClass = last ? (last.who === 'heroine' ? '' : ' ' + last.who) : ''
     const plateColor = last
@@ -3051,22 +3095,22 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
       React.createElement('input', {
         className: 'whg-input',
         value: text,
-        placeholder: '回复 ' + s.name + ' …',
+        placeholder: t('回复 ') + s.name + ' …',
         disabled: busy,
         onChange: (e: any) => { setText(e.target.value) },
         onKeyDown: (e: any) => { if (e.key === 'Enter') send() },
       }),
-      React.createElement('button', { className: 'whg-send', disabled: busy || !text.trim(), onClick: send }, '回复'))
+      React.createElement('button', { className: 'whg-send', disabled: busy || !text.trim(), onClick: send }, t('回复')))
     const fallbackNote = s.fallbackUsed
-      ? React.createElement('div', { className: 'whg-fallback-note' }, '（模型调用失败，' + s.name + ' 用了备用台词。原因：' + (s.fallbackReason || '未知') + ' · 目标模型：' + (s.lastModel || s.modelLabel || '未知') + '）')
+      ? React.createElement('div', { className: 'whg-fallback-note' }, t('（模型调用失败，') + s.name + t(' 用了备用台词。原因：') + (s.fallbackReason || t('未知')) + t(' · 目标模型：') + (s.lastModel || s.modelLabel || t('未知')) + '）')
       : null
     const now = last
       ? React.createElement('div', { key: 'now-' + ((s.history || []).length), className: 'whg-line-now ' + last.who }, last.text)
-      : React.createElement('div', { className: 'whg-line-now narrator' }, '（点击输入框，开始和' + s.name + '对话吧）')
+      : React.createElement('div', { className: 'whg-line-now narrator' }, t('（点击输入框，开始和') + s.name + t('对话吧）'))
     return React.createElement('div', { id: 'whg-panel', className: 'whg-panel' },
       React.createElement('div', { className: 'whg-plate' + plateClass, style: { background: plateColor } }, plateLabel),
       React.createElement('div', { className: 'whg-level' },
-        React.createElement('span', null, 'Lv.' + s.level + ' · 好感度 ' + s.affection + '/' + s.cap),
+        React.createElement('span', null, 'Lv.' + s.level + t(' · 好感度 ') + s.affection + '/' + s.cap),
         React.createElement('div', { className: 'whg-level-track' },
           React.createElement('div', { className: 'whg-level-fill', style: { width: Math.min(100, Math.round((s.affection / Math.max(1, s.cap)) * 100)) + '%' } }))),
       now,
@@ -3079,11 +3123,11 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
   function cgModal(): React.ReactElement | null {
     if (!settled || !s || !s.cg) return null
     if (s.cg.status === 'generating') {
-      return React.createElement('div', { className: 'whg-toast' }, '🎨 正在绘制 Lv 纪念 CG……（约半分钟）')
+      return React.createElement('div', { className: 'whg-toast' }, t('🎨 正在绘制 Lv 纪念 CG……（约半分钟）'))
     }
     if (s.cg.status === 'failed' && !s.cg.seen) {
       return React.createElement('div', { className: 'whg-toast', onClick: () => { act('cg-ack') } },
-        '⚠️ CG 生成失败：' + (s.cg.error || '未知错误') + '（点击关闭）')
+        t('⚠️ CG 生成失败：') + (s.cg.error || t('未知错误')) + t('（点击关闭）'))
     }
     if (s.cg.status === 'ready' && !s.cg.seen) {
       const detailReady = rewardCgDetail
@@ -3092,10 +3136,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         && rewardCgDetail.dataUrl
       if (!detailReady) {
         return React.createElement('div', { 'aria-modal': 'true', className: 'whg-cg-backdrop', role: 'dialog' },
-          React.createElement('div', { className: 'whg-cg-title' }, '🎁 升级啦 · ' + (s.cg.name || s.name) + '送给你的特殊CG'),
+          React.createElement('div', { className: 'whg-cg-title' }, t('🎁 升级啦 · ') + (s.cg.name || s.name) + t('送给你的特殊CG')),
           rewardCgError
-            ? React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, '特殊 CG 读取失败：' + rewardCgError)
-            : React.createElement('div', { className: 'whg-cg-title', role: 'status' }, rewardCgLoading ? '正在取出这份深海礼物……' : '正在准备这份深海礼物……'),
+            ? React.createElement('div', { className: 'whg-archive-error', role: 'alert' }, t('特殊 CG 读取失败：') + rewardCgError)
+            : React.createElement('div', { className: 'whg-cg-title', role: 'status' }, rewardCgLoading ? t('正在取出这份深海礼物……') : t('正在准备这份深海礼物……')),
           rewardCgError
             ? React.createElement('div', { className: 'whg-cg-btns' },
               React.createElement('button', {
@@ -3103,20 +3147,20 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                 disabled: rewardCgLoading,
                 onClick: () => loadRewardCg(rewardCgId),
                 type: 'button',
-              }, rewardCgLoading ? '重新读取中…' : '重新读取'),
+              }, rewardCgLoading ? t('重新读取中…') : t('重新读取')),
               React.createElement('button', {
                 className: 'whg-cg-btn alt',
                 disabled: busy,
                 onClick: acknowledgeRewardCg,
                 type: 'button',
-              }, '暂时收下并关闭'),
+              }, t('暂时收下并关闭')),
             )
             : null,
         )
       }
       return React.createElement('div', { 'aria-modal': 'true', className: 'whg-cg-backdrop', role: 'dialog' },
-        React.createElement('div', { className: 'whg-cg-title' }, '🎁 升级啦 · ' + (s.cg.name || s.name) + '送给你的特殊CG'),
-        React.createElement('img', { className: 'whg-cg-img', src: rewardCgDetail.dataUrl, alt: (s.cg.name || s.name) + '送给你的特殊CG' }),
+        React.createElement('div', { className: 'whg-cg-title' }, t('🎁 升级啦 · ') + (s.cg.name || s.name) + t('送给你的特殊CG')),
+        React.createElement('img', { className: 'whg-cg-img', src: rewardCgDetail.dataUrl, alt: (s.cg.name || s.name) + t('送给你的特殊CG') }),
         React.createElement('div', { className: 'whg-cg-btns' },
           s.cg.savedAsBg
             ? React.createElement('button', {
@@ -3126,19 +3170,19 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
                 act('cg-clear-bg')
               },
               type: 'button',
-            }, '恢复默认背景')
+            }, t('恢复默认背景'))
             : React.createElement('button', {
               className: 'whg-cg-btn',
               disabled: busy,
               onClick: saveRewardCgBackground,
               type: 'button',
-            }, '保存为galgame界面背景'),
+            }, t('保存为galgame界面背景')),
           React.createElement('button', {
             className: 'whg-cg-btn alt',
             disabled: busy,
             onClick: acknowledgeRewardCg,
             type: 'button',
-          }, '收下并关闭'),
+          }, t('收下并关闭')),
         ),
       )
     }
@@ -3151,15 +3195,15 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     if (s === null) {
       return React.createElement('div', { id: 'whg-tab-root', className: 'whg-root-tab' },
         React.createElement('div', { className: 'whg-bg whg-bg-fallback' }),
-        React.createElement('div', { className: 'whg-toast' }, apiError ? '⚠️ ' + apiError : '连接 galgame 服务中…'),
+        React.createElement('div', { className: 'whg-toast' }, apiError ? '⚠️ ' + apiError : t('连接 galgame 服务中…')),
       )
     }
     if (s.enabled === false) {
       return React.createElement('div', { id: 'whg-tab-root', className: 'whg-root-tab' },
         React.createElement('div', { className: 'whg-disabled' },
           React.createElement('div', { className: 'whg-disabled-card' },
-            React.createElement('h2', null, '鲸鱼娘 Galgame 已关闭'),
-            React.createElement('p', null, '在左侧“设置 → 插件 → 插件配置”中展开鲸鱼娘 Galgame，即可重新开启。'),
+            React.createElement('h2', null, t('鲸鱼娘 Galgame 已关闭')),
+            React.createElement('p', null, t('在左侧“设置 → 插件 → 插件配置”中展开鲸鱼娘 Galgame，即可重新开启。')),
           ),
         ),
       )
@@ -3192,7 +3236,7 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
         })
         : null,
       s === null
-        ? React.createElement('div', { className: 'whg-toast' }, apiError ? '⚠️ ' + apiError : '连接 galgame 服务中…')
+        ? React.createElement('div', { className: 'whg-toast' }, apiError ? '⚠️ ' + apiError : t('连接 galgame 服务中…'))
         : (apiError ? React.createElement('div', { className: 'whg-toast' }, '⚠️ ' + apiError) : null),
     )
   }
@@ -3217,6 +3261,19 @@ export const name = 'whale-galgame'
 export const inject = ['slots']
 
 export function apply(ctx: any): void {
+  // Read, do not inject: the locale service is not in this plugin's dependency
+  // list, so a shell without one has to keep working. DSH exposes only 'zh' and
+  // 'en' and collapses regional subtags, which is exactly why the plugin also
+  // carries its own language setting — zh-TW is unreachable from the host.
+  if (ctx.locale && typeof ctx.locale.getLocale === 'function') {
+    const readHostLocale = () => {
+      const snapshot = ctx.locale.getLocale()
+      hostLocale = snapshot && typeof snapshot.active === 'string' ? snapshot.active : undefined
+    }
+    readHostLocale()
+    if (typeof ctx.on === 'function') ctx.on('locale/change', readHostLocale)
+  }
+
   const style = document.createElement('style')
   style.dataset.plugin = 'dsh-whale-galgame'
   style.textContent = CSS
