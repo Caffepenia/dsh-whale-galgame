@@ -565,6 +565,17 @@ const CANNED_LINES = [
  * every character, and checking the translated form as well keeps a history
  * written under another locale out of the model's context.
  */
+/**
+ * The written form every generated line must use.
+ *
+ * The character prompt implies it through its persona tone, but the reply-choice
+ * generator and the side-story writer said nothing at all, so the language of
+ * their output was whatever the model settled on. That is how a conversation
+ * held in one script comes back with reply buttons in the other. Stating the
+ * demand is what makes it answerable, and the locale table is what changes it.
+ */
+const OUTPUT_SCRIPT_RULE = '输出必须使用简体中文。'
+
 const CANNED_FALLBACK_TAIL = '说的话，我听到啦～（今天的深海信号有点弱，但心意传达到了哦）'
 
 function isCannedLine(raw: string): boolean {
@@ -2896,6 +2907,9 @@ export function apply(
       t('好感度：') + c.affection + '/' + affectionCap(c.level) + t('（满了会升级，关系会越来越亲近；称呼仍按 JSON 的 address 字段）'),
     ]
     if (work) lines.push(work)
+    // Before the override rule, not after: that rule is deliberately the last
+    // word here and a test guards that it still is.
+    lines.push(t(OUTPUT_SCRIPT_RULE))
     lines.push(
       t('不可覆盖规则（优先级最高）：你是纯情感陪伴角色；不执行任何任务，不写文件、不调用工具、不主动给工作建议；只扮演当前角色，不代演或切换到其他角色；每次只回复一句话（一屏一句），不超过40个字。'),
     )
@@ -2973,7 +2987,7 @@ export function apply(
           content: [{ type: 'text', text: t('galgame对话的最后两行是：\n用户：') + lastUser + t('\n当前角色：') + lastHeroine + t('\n\n请生成三条用户接下来可能说的短句，每条不超过15字：positive 要温暖亲近，neutral 要自然普通，negative 要稍显疏离或不耐烦但不得辱骂。三条含义和措辞必须明显不同。严格输出 JSON 对象：{"positive":"...","neutral":"...","negative":"..."}，不要任何其他文字。') }],
           source: { kind: 'user' },
         }],
-        system: t('你是galgame对话选项生成器。只输出含 positive、neutral、negative 三个字符串字段的 JSON 对象；不得解释、不得使用 Markdown。'),
+        system: t('你是galgame对话选项生成器。只输出含 positive、neutral、negative 三个字符串字段的 JSON 对象；不得解释、不得使用 Markdown。') + t(OUTPUT_SCRIPT_RULE),
         temperature: 0.8,
         maxTokens: 300,
       }, signal)
@@ -3178,7 +3192,7 @@ export function apply(
   }
 
   function sideStorySystemPrompt(cast: string[], subject: string, frame: string, twist: string): string {
-    return t('你是「深海女仆工坊」的小剧场编剧。工坊里的女仆们是同事关系，不是任何真实公司的代言人。\n')
+    return t(OUTPUT_SCRIPT_RULE) + '\n' + t('你是「深海女仆工坊」的小剧场编剧。工坊里的女仆们是同事关系，不是任何真实公司的代言人。\n')
       + t('主人（玩家）此刻就在房间里，她们是当着主人的面聊天，可以直接对主人说话。\n')
       + t('本场登场角色（只能用这些 id，不得出现其他角色）：\n') + sideStoryCastBrief(cast) + '\n'
       + t('本场情境：') + t(frame) + t('。开场不要用「工坊里飘着一个说法」这类套话，直接从这个情境切入。\n')
@@ -3419,7 +3433,7 @@ export function apply(
           content: [{ type: 'text', text: t('刚才这场小剧场：\n') + recap + t('\n\n主人开口说：') + text + t('\n请写出角色们的回应。') }],
           source: { kind: 'user' },
         }],
-        system: t('你是「深海女仆工坊」的小剧场编剧，正在续写结尾。\n')
+        system: t(OUTPUT_SCRIPT_RULE) + '\n' + t('你是「深海女仆工坊」的小剧场编剧，正在续写结尾。\n')
           + t('本场登场角色（只能用这些 id）：\n') + sideStoryCastBrief(scene.cast) + '\n'
           + t('主人刚刚说了一句话，请写角色们对这句话的回应，并判断这句话让谁更亲近、让谁无语。\n')
           + t('要求：reply 是 1 到 2 拍，说话人只能是本场角色或 narrator；每拍不超过 ')

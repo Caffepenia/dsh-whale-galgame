@@ -11,7 +11,7 @@ import { apply } from '../src/index.ts'
  * Drives the plugin over its own HTTP action surface, which is where a stored
  * line is turned into something the browser renders.
  */
-function makeHarness(dshHome: string, files = new Map<string, string>()) {
+function makeHarness(dshHome: string, files = new Map<string, string>(), systems?: string[]) {
   const root = 'E:\\workspace\\locale-switch'
   const sessions = [{
     header: { version: 0, id: 'locale-session', cwd: root, createdAt: 1_000 },
@@ -54,10 +54,14 @@ function makeHarness(dshHome: string, files = new Map<string, string>()) {
       listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }],
       listModels: async () => [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', inputModalities: ['text'] }],
       resolveModelInfo: async () => ({}),
-      stream: async function* (): AsyncGenerator<any> {
-        throw new Error('no model in this fixture')
-        // Keep this an async generator without yielding at runtime.
-        yield { type: 'text-delta', text: '' }
+      stream: async function* (options: any): AsyncGenerator<any> {
+        if (!systems) throw new Error('no model in this fixture')
+        const system = String(options && options.system || '')
+        systems.push(system)
+        if (system.includes('情绪分类器')) yield { type: 'text-delta', text: 'normal' }
+        else if (system.includes('对话选项生成器')) {
+          yield { type: 'text-delta', text: '{"positive":"陪你休息一下","neutral":"继续聊聊吧","negative":"我想先静静"}' }
+        } else yield { type: 'text-delta', text: '主人今天也辛苦了呢。' }
       },
     },
     inject: (names: string[], callback: Function) => {
@@ -184,6 +188,35 @@ test('a picked choice is saved as the plugin\'s own text, a typed line verbatim'
       '我自己打的一句話',
       'a typed line is the user\'s own words and is kept as sent',
     )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('every prompt that writes dialogue states which script to write it in', async () => {
+  // The character prompt used to imply this through its persona tone and the
+  // other generators said nothing at all, so a conversation held in one script
+  // could come back with reply buttons in the other. The rule travels through
+  // the locale table, so this asserts the seam rather than the wording.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-script-rule-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  const systems: string[] = []
+  try {
+    const harness = makeHarness(dshHome, new Map<string, string>(), systems)
+    const entry = await harness.post('view')
+    const answered = await harness.post('chat', { choiceId: entry.choices[0].id, text: entry.choices[0].text })
+    assert.notEqual(answered.fallbackUsed, true, 'the fixture model answered')
+
+    const writesDialogue = systems.filter((system) => !system.includes('情绪分类器'))
+    assert.ok(writesDialogue.length >= 2, 'both the character and the choice generator ran')
+    for (const system of writesDialogue) {
+      assert.ok(
+        system.includes('输出必须使用简体中文。'),
+        'prompt does not say which script to answer in: ' + system.slice(0, 60),
+      )
+    }
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
