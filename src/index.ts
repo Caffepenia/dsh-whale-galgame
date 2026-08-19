@@ -231,6 +231,15 @@ const SIDE_STORY_TOPIC_BLOCKLIST = [
   '诉讼', '起诉', '控告', '侵权', '监管', '处罚', '罚款', '封禁', '调查',
   '裁员', '离职', '解雇', '辞职', '收购', '融资', '股价', '财报', '亏损',
   '事故', '泄露', '漏洞', '越狱', '滥用', '造谣', '死亡', '自杀', '战争',
+  // Traditional forms of the terms above, plus the Taiwan words with no
+  // Simplified counterpart in the list. This filter runs against fetched web
+  // text, whose script follows whatever was published rather than any locale
+  // setting, so both scripts have to be present at all times. Terms that are
+  // identical in both (控告, 封禁, 事故, 漏洞, 死亡) are not repeated.
+  '訴訟', '起訴', '侵權', '監管', '處罰', '罰款', '調查', '封鎖', '停權',
+  '裁員', '離職', '解僱', '辭職', '收購', '融資', '股價', '財報', '虧損',
+  '洩露', '洩漏', '越獄', '濫用', '造謠', '自殺', '戰爭',
+  '資遣', '開除', '併購', '個資外洩', '假訊息', '假消息',
   'lawsuit', 'sue', 'court', 'regulat', 'fine', 'ban', 'probe', 'antitrust',
   'layoff', 'fired', 'resign', 'acquisition', 'ipo', 'stock', 'revenue',
   'breach', 'leak', 'exploit', 'jailbreak', 'abuse', 'death', 'war',
