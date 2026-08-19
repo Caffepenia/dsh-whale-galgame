@@ -48,12 +48,62 @@ for (const [text, expected] of CASES) {
   })
 }
 
-test('Simplified input still classifies exactly as before', () => {
-  // The change is strictly additive, so nothing that used to be recognised may
-  // move to a different category.
-  assert.equal(classify('帮我调试一下，这个程序一直崩溃'), 'code-debug')
-  assert.equal(classify('帮我重构这个组件，顺便把接口写完'), 'code-development')
-  assert.equal(classify('帮我把这份材料总结成要点'), 'document-summary')
-  assert.equal(classify('帮我做这季的数据分析，顺便画个图表'), 'data-analysis')
-  assert.equal(classify('帮我校对这段翻译的措辞'), 'translation')
+test('classifies Traditional input: research', () => {
+  assert.equal(classify('幫我找資料，查一下相關文獻的出處'), 'research')
+})
+
+/**
+ * Simplified input this change must not move.
+ *
+ * The expected value of every row is what the classifier answered BEFORE any
+ * Traditional term was added, `null` included. A Traditional twin cannot appear
+ * in Simplified text, so it cannot reach these; a term that reads the same in
+ * both scripts can, and that is the whole risk this table exists to catch.
+ *
+ * The rows carrying 文件, 修正, 需求, 素材, 草稿, 原文, 期限, 排程 and 影像 are
+ * the ones that actually regressed while this branch was being written: each of
+ * those words is ordinary Simplified vocabulary as well as Taiwanese usage, so
+ * adding it plain stole sentences from other categories. 文件夹 is the sharpest
+ * of them — a folder, classified as document writing.
+ */
+const UNCHANGED: [string, string | null][] = [
+  ['帮我调试一下，这个程序一直崩溃', 'code-debug'],
+  ['帮我重构这个组件，顺便把接口写完', 'code-development'],
+  ['帮我把这份材料总结成要点', 'document-summary'],
+  ['帮我做这季的数据分析，顺便画个图表', 'data-analysis'],
+  ['帮我校对这段翻译的措辞', 'translation'],
+  ['帮我重构文件读取逻辑', 'code-development'],
+  ['帮我实现这个文件', 'code-development'],
+  ['帮我计划这个文件', 'planning'],
+  ['帮我看看这个文件', null],
+  ['这个文件我读不懂', null],
+  ['帮我整理一下文件夹', null],
+  ['帮我修正这个界面的排版', 'visual-design'],
+  ['帮我修正一下这个函数的返回值', 'code-development'],
+  ['把这个需求拆成几个任务', null],
+  ['这批素材要重新压缩', null],
+  ['先写个草稿给我看看', null],
+  ['对照原文校对一下译文', 'translation'],
+  ['这个项目的期限是下周五', null],
+  ['帮我排程一下明天的会议', null],
+  ['这张影像的分辨率太低', null],
+  ['今天天气真好，晚上吃什么', null],
+  ['我有点累了，想休息一下', null],
+]
+
+for (const [text, expected] of UNCHANGED) {
+  test(`Simplified input is untouched: ${text}`, () => {
+    assert.equal(classify(text) ?? null, expected)
+  })
+}
+
+/**
+ * Category order decides ties, so a new alternative can lose a sentence to an
+ * earlier definition without matching anything it should not. Both of these
+ * did exactly that before the terms behind them were narrowed.
+ */
+test('a new term does not steal a sentence from an earlier category', () => {
+  assert.equal(classify('幫我修正這個介面的排版'), 'visual-design')
+  assert.equal(classify('幫我寫一份系統設計文件的初稿'), 'document-writing')
+  assert.equal(classify('這個程式一直丟例外，幫我追一下堆疊'), 'code-debug')
 })

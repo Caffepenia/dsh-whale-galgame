@@ -608,6 +608,40 @@ test('routes serious material away from comedy and falls back to the local seed'
   }
 })
 
+test('routes serious Traditional material away from comedy too', async () => {
+  // The Simplified counterpart above is the same filter. A Taiwanese headline
+  // reads 資遣 rather than 裁员 and 外洩 rather than 泄露, so the blocklist has
+  // to carry both scripts or the filter silently stops holding for half its
+  // readers. 外洩 in particular is the bare term: 個資外洩 alone left
+  // 資料外洩 and 機密外洩 to pass.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-web-block-tw-'))
+  const files: SharedDisk = new Map()
+  const originalRandom = Math.random
+  Math.random = () => 0
+  try {
+    const { post } = makeHarness({
+      root: 'E:\\workspace\\web-block-tw',
+      dshHome,
+      files,
+      web: { search: async () => freshSources([
+        ['公司發生資料外洩', '客戶名單受影響'],
+        ['機密外洩事件檢討', '內部流程重新盤點'],
+        ['研究資料外洩後續', '相關單位持續追蹤'],
+      ]) },
+    })
+    await post('view')
+    const started = await post('side-story', { op: 'start' })
+    const scene = started.sideStory.scene
+    assert.ok(scene, 'the run should still produce a scene')
+    assert.equal(scene.seed.kind, 'activity', 'layoffs and data leaks are not skit material')
+    assert.deepEqual(scene.sources, [], 'a fallback seed carries no citations')
+  } finally {
+    Math.random = originalRandom
+    await drain()
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
 test('never touches the network when the seed source is set to activity', async () => {
   const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-web-off-'))
   const files: SharedDisk = new Map()

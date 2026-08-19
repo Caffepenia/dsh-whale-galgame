@@ -239,7 +239,7 @@ const SIDE_STORY_TOPIC_BLOCKLIST = [
   '訴訟', '起訴', '侵權', '監管', '處罰', '罰款', '調查', '封鎖', '停權',
   '裁員', '離職', '解僱', '辭職', '收購', '融資', '股價', '財報', '虧損',
   '洩露', '洩漏', '越獄', '濫用', '造謠', '自殺', '戰爭',
-  '資遣', '開除', '併購', '個資外洩', '假訊息', '假消息',
+  '資遣', '開除', '併購', '個資外洩', '外洩', '洩漏', '假訊息', '假消息',
   'lawsuit', 'sue', 'court', 'regulat', 'fine', 'ban', 'probe', 'antitrust',
   'layoff', 'fired', 'resign', 'acquisition', 'ipo', 'stock', 'revenue',
   'breach', 'leak', 'exploit', 'jailbreak', 'abuse', 'death', 'war',
