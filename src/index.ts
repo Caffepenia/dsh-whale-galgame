@@ -2131,6 +2131,32 @@ export function apply(
     }
   }
 
+  /**
+   * Render one stored line on its way to the browser.
+   *
+   * Narrator notices and the canned fallback are built by joining translatable
+   * fragments to runtime values, so the joined result is not itself a table key
+   * and t() cannot translate it after the fact. Those lines are stored as their
+   * segments instead: plain strings are zh-CN sources translated on every read,
+   * and `{ id, ref }` resolves against the character's current profile, so a
+   * language switch — or a profile edit — re-renders them. Lines saved before
+   * this existed have only `text` and keep the wording they were written with.
+   */
+  function renderLine(row: any): any {
+    if (!row || !Array.isArray(row.seg)) return localizedLine(row)
+    const text = row.seg
+      .map((part: any) => typeof part === 'string'
+        ? t(part)
+        : String(effectiveProfileFor(String(part && part.id))[String(part && part.ref)] || ''))
+      .join('')
+    return { ...row, text }
+  }
+
+  /** A stored line that re-renders itself. See {@link renderLine}. */
+  function composedLine(who: string, seg: any[]): any {
+    return renderLine({ who, seg })
+  }
+
   function profileResult(charId: string): any {
     const builtIn = builtInProfile(charId)
     const overrides = { ...profileOverridesFor(charId) }
@@ -2288,10 +2314,15 @@ export function apply(
     if (includeGreeting && c.chatLines.length === 0) {
       const profile = effectiveProfileFor(next)
       if (changed && s.lastCurrent && s.lastCurrent !== next) {
-        c.chatLines.push({
-          who: 'narrator',
-          text: '（' + profile.address + t('把角色来源切换为 ') + (s.characterModelLabel || t('工作区主模型')) + '，' + profile.displayName + t(' 登场了。）'),
-        })
+        c.chatLines.push(composedLine('narrator', [
+          '（',
+          { id: next, ref: 'address' },
+          '把角色来源切换为 ',
+          s.characterModelLabel || '工作区主模型',
+          '，',
+          { id: next, ref: 'displayName' },
+          ' 登场了。）',
+        ]))
       }
       // Keep the heroine as the final speaker: the client may present reply
       // choices only while her line is current.
@@ -2352,11 +2383,15 @@ export function apply(
       s.tokens.lastActiveAt = now
     }
     if (decay > 0) {
-      const profile = effectiveProfileFor(s.current)
-      s.characters[s.current].chatLines.push({
-        who: 'narrator',
-        text: t('（分别了太久……好感度下降了 ') + decay + t(' 点。') + profile.displayName + t(' 似乎一直在等') + profile.address + t('回来。）'),
-      })
+      s.characters[s.current].chatLines.push(composedLine('narrator', [
+        '（分别了太久……好感度下降了 ',
+        String(decay),
+        ' 点。',
+        { id: s.current, ref: 'displayName' },
+        ' 似乎一直在等',
+        { id: s.current, ref: 'address' },
+        '回来。）',
+      ]))
     }
     return { decay, gain, changed }
   }
@@ -2370,16 +2405,20 @@ export function apply(
     if (!c.level) c.level = 1
     const cap = affectionCap(c.level)
     if (c.affection >= cap) {
-      const profile = effectiveProfileFor(charId)
       c.level += 1
       c.affection = Math.max(0, c.affection - cap)
       c.choices = []
-      c.chatLines.push({
-        who: 'narrator',
-        text: options.skipCg === true
-          ? t('（好感度已满！') + profile.displayName + t(' 的等级提升至 Lv.') + c.level + '！）'
-          : t('（好感度已满！') + profile.displayName + t(' 的等级提升至 Lv.') + c.level + t('！正在为') + profile.address + t('准备礼物……）'),
-      })
+      c.chatLines.push(composedLine('narrator', options.skipCg === true
+        ? ['（好感度已满！', { id: charId, ref: 'displayName' }, ' 的等级提升至 Lv.', String(c.level), '！）']
+        : [
+          '（好感度已满！',
+          { id: charId, ref: 'displayName' },
+          ' 的等级提升至 Lv.',
+          String(c.level),
+          '！正在为',
+          { id: charId, ref: 'address' },
+          '准备礼物……）',
+        ]))
       if (options.skipCg === true) return true
       const cgId = makeId('cg')
       c.cgs.push({
@@ -2495,7 +2534,7 @@ export function apply(
       // choices) are keys and translate, while model-authored text is not a key
       // and passes through untouched. Already-translated text is not a key
       // either, so this is idempotent.
-      history: c.chatLines.map(localizedLine),
+      history: c.chatLines.map(renderLine),
       choices: (c.choices || []).slice(0, 3).map(localizedLine),
       sideStory: sideStoryView(),
       chatUnlocked: true,
@@ -5042,7 +5081,12 @@ export function apply(
             }
             c.log.push({ role: 'assistant', text: reply })
             if (c.log.length > 24) c.log = c.log.slice(-24)
-            c.chatLines.push({ who: 'heroine', text: reply })
+            // The canned line is template text, so it is stored as segments and
+            // re-rendered on read. c.log keeps the flat string: isCannedLine
+            // drops it from model context before the model ever sees it.
+            c.chatLines.push(usedFallback
+              ? composedLine('heroine', [{ id: prepared.charId, ref: 'address' }, CANNED_FALLBACK_TAIL])
+              : { who: 'heroine', text: reply })
             const before = c.affection
             const delta = prepared.selectedChoice
               ? (prepared.selectedChoice.effect === 1 ? 1 : prepared.selectedChoice.effect === -1 ? -1 : 0)
