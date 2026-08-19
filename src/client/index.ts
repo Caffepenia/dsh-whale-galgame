@@ -3261,18 +3261,29 @@ export const name = 'whale-galgame'
 export const inject = ['slots']
 
 export function apply(ctx: any): void {
-  // Read, do not inject: the locale service is not in this plugin's dependency
-  // list, so a shell without one has to keep working. DSH exposes only 'zh' and
-  // 'en' and collapses regional subtags, which is exactly why the plugin also
-  // carries its own language setting — zh-TW is unreachable from the host.
-  if (ctx.locale && typeof ctx.locale.getLocale === 'function') {
-    const readHostLocale = () => {
-      const snapshot = ctx.locale.getLocale()
+  // Follow the DSH host locale where the shell provides one.
+  //
+  // This has to go through inject(), not a property check: cordis throws
+  // "cannot get property X without inject" on any service the plugin did not
+  // declare, so `if (ctx.locale)` is not a probe, it is a crash. A nested
+  // inject is the optional form — naming 'locale' in the module-level inject
+  // above would instead keep the whole plugin unmounted on a shell that has no
+  // locale service, costing the pet and the galgame tab to gain a language
+  // hint. Nested, it simply never fires there and 'auto' resolves to zh-CN.
+  //
+  // DSH exposes only 'zh' and 'en' and collapses regional subtags, which is
+  // exactly why the plugin also carries its own language setting: zh-TW is
+  // unreachable from the host value alone.
+  ctx.inject(['locale'], (scoped: any) => {
+    const readHostLocale = (): void => {
+      const snapshot = scoped.locale && typeof scoped.locale.getLocale === 'function'
+        ? scoped.locale.getLocale()
+        : null
       hostLocale = snapshot && typeof snapshot.active === 'string' ? snapshot.active : undefined
     }
     readHostLocale()
-    if (typeof ctx.on === 'function') ctx.on('locale/change', readHostLocale)
-  }
+    if (typeof scoped.on === 'function') scoped.on('locale/change', readHostLocale)
+  })
 
   const style = document.createElement('style')
   style.dataset.plugin = 'dsh-whale-galgame'
