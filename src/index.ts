@@ -5087,7 +5087,10 @@ export function apply(
             c.log.push({ role: 'user', text })
             c.chatLines.push({
               who: 'user',
-              text,
+              // A picked choice is the plugin's own text, so the save keeps the
+              // stored wording and translates it on the way out like every other
+              // line. Anything typed is the user's words and is kept verbatim.
+              text: prepared.selectedChoice ? prepared.selectedChoice.text : text,
               emotion,
               choiceId: prepared.selectedChoice ? prepared.selectedChoice.id : null,
             })

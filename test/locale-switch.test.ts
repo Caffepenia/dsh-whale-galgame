@@ -161,6 +161,35 @@ test('the greeting and the fallback choices are saved at their zh-CN sources', a
   }
 })
 
+test('a picked choice is saved as the plugin\'s own text, a typed line verbatim', async () => {
+  // The browser sends back the text it displayed, which has already been
+  // translated. Saving that would freeze the line; the stored choice is the
+  // same sentence at its source, and the view translates it on the way out.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-locale-choice-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(dshHome)
+    const entry = await harness.post('view')
+    const picked = entry.choices[0]
+
+    const answered = await harness.post('chat', { choiceId: picked.id, text: 'WHATEVER THE BROWSER SENT' })
+    const asChoice = answered.history.filter((line: any) => line.who === 'user').at(-1)
+    assert.equal(asChoice.text, picked.text, 'the stored choice wins over the posted text')
+    assert.equal(asChoice.choiceId, picked.id)
+
+    const typed = await harness.post('chat', { text: '我自己打的一句話' })
+    assert.equal(
+      typed.history.filter((line: any) => line.who === 'user').at(-1).text,
+      '我自己打的一句話',
+      'a typed line is the user\'s own words and is kept as sent',
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
 test('a renamed character updates the notice that announced it', async () => {
   // The same property that makes a notice translatable: it names the character
   // rather than copying the name it had when the line was written.
