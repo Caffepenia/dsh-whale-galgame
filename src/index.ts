@@ -511,6 +511,16 @@ function builtInProfile(charId: string): Record<string, string> {
   }
 }
 
+/**
+ * Translate one stored dialogue line or choice on its way to the browser.
+ *
+ * Rows are kept verbatim apart from `text`, so speaker, id and effect survive.
+ * @param row - a stored `{ who, text }` line or `{ id, text, effect }` choice.
+ */
+function localizedLine(row: any): any {
+  return row && typeof row.text === 'string' ? { ...row, text: t(row.text) } : row
+}
+
 function affectionCap(level: number): number {
   return 30 + (Math.max(1, level) - 1) * 15
 }
@@ -2478,8 +2488,15 @@ export function apply(
       level: c.level,
       cap: affectionCap(c.level),
       affection: c.affection,
-      history: c.chatLines,
-      choices: (c.choices || []).slice(0, 3),
+      // Stored lines keep whatever language they were written in, and the zh-CN
+      // source doubles as the lookup key, so translating on the way out applies
+      // a language change to history that predates it. The split falls out for
+      // free: the plugin's own template lines (greeting, narration, fallback
+      // choices) are keys and translate, while model-authored text is not a key
+      // and passes through untouched. Already-translated text is not a key
+      // either, so this is idempotent.
+      history: c.chatLines.map(localizedLine),
+      choices: (c.choices || []).slice(0, 3).map(localizedLine),
       sideStory: sideStoryView(),
       chatUnlocked: true,
       modelOnline: s.modelOnline === true,
