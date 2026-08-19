@@ -4831,7 +4831,11 @@ export function apply(
           : null
         const initialGreetingIndex = character.log.length === 0
           ? character.chatLines.findIndex((line: any) => line && line.who === 'heroine'
-            && line.text === previousProfile.greeting)
+            // Compare in the active locale, not raw: the stored line keeps the
+            // language it was written in while the profile greeting is
+            // translated, so a language change would otherwise stop this
+            // matching and silently disable the in-place greeting update.
+            && t(line.text) === previousProfile.greeting)
           : -1
         const previousGreetingText = initialGreetingIndex >= 0
           ? character.chatLines[initialGreetingIndex].text
@@ -4882,7 +4886,11 @@ export function apply(
           : null
         const initialGreetingIndex = character.log.length === 0
           ? character.chatLines.findIndex((line: any) => line && line.who === 'heroine'
-            && line.text === previousProfile.greeting)
+            // Compare in the active locale, not raw: the stored line keeps the
+            // language it was written in while the profile greeting is
+            // translated, so a language change would otherwise stop this
+            // matching and silently disable the in-place greeting update.
+            && t(line.text) === previousProfile.greeting)
           : -1
         const previousGreetingText = initialGreetingIndex >= 0
           ? character.chatLines[initialGreetingIndex].text
@@ -4980,7 +4988,11 @@ export function apply(
                     if (m.role === 'assistant' && typeof m.text === 'string' && isCannedLine(m.text)) continue
                     msgs.push({
                       role: m.role === 'assistant' ? 'assistant' : 'user',
-                      content: [{ type: 'text', text: m.text }],
+                      // Same treatment the browser gets. The character's tone
+                      // instruction names the output language, so handing the
+                      // model a greeting still in the pre-switch language would
+                      // anchor it there and undo that instruction.
+                      content: [{ type: 'text', text: t(m.text) }],
                       source: m.role === 'assistant'
                         ? { kind: 'model', provider: sel.provider, model: sel.model }
                         : { kind: 'user' },
