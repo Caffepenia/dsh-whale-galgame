@@ -496,19 +496,27 @@ function normalizeProfileOverrides(raw: any): Record<string, string> {
   return normalized
 }
 
-function builtInProfile(charId: string): Record<string, string> {
+/** The roster entry as written, for values that are about to be persisted. */
+function rawBuiltInProfile(charId: string): Record<string, string> {
   const ch = ROSTER[charId] || ROSTER.deepseek
+  return {
+    displayName: ch.name,
+    address: ch.address,
+    greeting: ch.greet,
+    persona: ch.persona,
+    tone: ch.tone,
+    visual: ch.visual,
+  }
+}
+
+function builtInProfile(charId: string): Record<string, string> {
   // ROSTER is a module-level table, evaluated before setLocale() can run, so
   // its text is translated here at the read site rather than where it is
   // declared. Everything downstream reads the profile, not the roster.
-  return {
-    displayName: t(ch.name),
-    address: t(ch.address),
-    greeting: t(ch.greet),
-    persona: t(ch.persona),
-    tone: t(ch.tone),
-    visual: t(ch.visual),
-  }
+  const raw = rawBuiltInProfile(charId)
+  const out: Record<string, string> = {}
+  for (const field of PROFILE_FIELDS) out[field] = t(raw[field])
+  return out
 }
 
 /**
@@ -2132,6 +2140,18 @@ export function apply(
   }
 
   /**
+   * The same profile with the built-in text left at its zh-CN source. A value
+   * that is about to be written into the save comes from here, so t() can still
+   * reach it on the way out; overrides are the user's own words either way.
+   */
+  function rawProfileFor(charId: string): Record<string, string> {
+    return {
+      ...rawBuiltInProfile(charId),
+      ...profileOverridesFor(charId),
+    }
+  }
+
+  /**
    * Render one stored line on its way to the browser.
    *
    * Narrator notices and the canned fallback are built by joining translatable
@@ -2326,7 +2346,7 @@ export function apply(
       }
       // Keep the heroine as the final speaker: the client may present reply
       // choices only while her line is current.
-      c.chatLines.push({ who: 'heroine', text: profile.greeting })
+      c.chatLines.push({ who: 'heroine', text: rawProfileFor(next).greeting })
       mutated = true
     }
     // Older global/workspace saves may already contain a timeline ending in
@@ -2884,9 +2904,9 @@ export function apply(
 
   function fallbackChoicesFor(): any[] {
     return shuffleOnce([
-      { id: makeId('choice-positive'), text: t(FALLBACK_CHOICES.positive), effect: 1 },
-      { id: makeId('choice-neutral'), text: t(FALLBACK_CHOICES.neutral), effect: 0 },
-      { id: makeId('choice-negative'), text: t(FALLBACK_CHOICES.negative), effect: -1 },
+      { id: makeId('choice-positive'), text: FALLBACK_CHOICES.positive, effect: 1 },
+      { id: makeId('choice-neutral'), text: FALLBACK_CHOICES.neutral, effect: 0 },
+      { id: makeId('choice-negative'), text: FALLBACK_CHOICES.negative, effect: -1 },
     ])
   }
 

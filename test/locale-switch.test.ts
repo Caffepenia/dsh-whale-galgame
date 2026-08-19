@@ -135,6 +135,32 @@ test('a narrator notice is stored as its sources, so a later locale can reach it
   }
 })
 
+test('the greeting and the fallback choices are saved at their zh-CN sources', async () => {
+  // A value written while one language is active must not carry that language
+  // into the save, or a later switch cannot reach it. Both of these are served
+  // through the same read-side translation the rest of the history uses.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-locale-src-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(dshHome)
+    await harness.post('view')
+    await harness.post('settings-set', { characterMode: 'manual', characterId: 'chatgpt' })
+
+    const saved = JSON.parse(await nativeFs.readFile(globalSavePath(dshHome), 'utf8'))
+    const character = (saved.state || saved).characters.chatgpt
+    const greeting = character.chatLines.find((line: any) => line.who === 'heroine')
+    assert.equal(greeting.text, '「嗨，我把频道都理顺啦。现在只想听听你心里那一条线。」')
+    assert.deepEqual(
+      character.choices.map((choice: any) => choice.text).sort(),
+      ['先让我安静一下', '想再靠近你一点', '那就继续聊聊吧'],
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
 test('a renamed character updates the notice that announced it', async () => {
   // The same property that makes a notice translatable: it names the character
   // rather than copying the name it had when the line was written.
