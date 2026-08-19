@@ -2725,7 +2725,38 @@ export function apply(
     })
   }
 
+  /**
+   * Models that refused `temperature`. Reasoning models, and the Codex bridge
+   * in front of them, reject sampling knobs outright, so the first refusal is
+   * remembered per model rather than costing a doubled round trip every call.
+   */
+  const samplingUnsupported = new Set<string>()
+
+  /**
+   * One model call, retried once without `temperature` when the provider says
+   * it does not take one. Every model call routes through here, so the retry
+   * covers chat, emotion, choices and the side-story writer alike.
+   */
   async function streamText(options: any, externalSignal?: AbortSignal): Promise<string> {
+    const key = String(options.provider) + '/' + String(options.model)
+    const withoutTemperature = () => {
+      const rest = { ...options }
+      delete rest.temperature
+      return rest
+    }
+    if (samplingUnsupported.has(key)) return streamOnce(withoutTemperature(), externalSignal)
+    try {
+      return await streamOnce(options, externalSignal)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const refused = /unsupported parameter/i.test(message) && /temperature/i.test(message)
+      if (options.temperature === undefined || !refused) throw err
+      samplingUnsupported.add(key)
+      return await streamOnce(withoutTemperature(), externalSignal)
+    }
+  }
+
+  async function streamOnce(options: any, externalSignal?: AbortSignal): Promise<string> {
     const controller = externalSignal ? null : new AbortController()
     const signal = externalSignal || controller!.signal
     const timeout = controller
