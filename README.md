@@ -154,6 +154,8 @@ dsh --profile web
 DASHSCOPE_API_KEY='your-local-key' dsh --profile web
 ~~~
 
+DSH 0.1.0-rc.7 及以上也可以在“设置 → 插件 → 插件配置”的本插件卡片里填写“DashScope 密钥”。key 保存在 DSH 自己的设置文档中，不进入本仓库；它被声明为机密字段，读取时会在离开 Host 之前被剥除，因此永远不会发送到浏览器。也正因如此，这个输入框不会显示已保存的 key，只标示是否已配置；留空保存不会清除已有的 key。
+
 不要把真实 key 写入仓库文件或提交到 Git。
 
 ## 数据与隐私

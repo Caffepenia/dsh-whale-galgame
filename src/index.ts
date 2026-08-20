@@ -2711,6 +2711,7 @@ export async function apply(
       sideStoryWebAvailable: !!webSeam,
       // Whether a DashScope key is configured, never the key itself: the card
       // needs to say "configured" without a secret crossing to the browser.
+      dashscopeKeySet: !!cfg.dashscopeApiKey,
     }
   }
 

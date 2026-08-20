@@ -6,10 +6,22 @@
  * every reply; level-up CG rewards pop as modals and may be saved inside
  * the galgame scene without changing the workspace background.
  */
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import { WHALE_ART } from './art.generated'
 import { WHALE_SETTINGS_NS } from '../settings-namespace.ts'
+import {
+  createSettingsWriter,
+  noSettingsScopeSnapshot,
+  releaseSettingsScope,
+  saveDashscopeKey,
+  scopeAcceptsWrites,
+  setSettingsScope,
+  settingsScope,
+  settingsScopeSnapshot,
+  settingsWriter,
+  subscribeSettingsScope,
+} from './settings-scope.ts'
 
 const CSS = [
   // ── pet ────────────────────────────────────────────────────────────────
@@ -242,6 +254,7 @@ const CSS = [
   '.whg-settings-copy small{display:block;margin-top:3px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.45}',
   '.whg-settings-toggle{justify-self:end;min-width:74px;padding:6px 13px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;line-height:1.35}',
   '.whg-settings-toggle[aria-checked="true"]{border-color:#3da87a;background:color-mix(in srgb,#3da87a 18%,transparent);color:var(--dsw-alias-label-primary)}',
+  '.whg-settings-key{display:flex;min-width:0;gap:8px}.whg-settings-key .whg-settings-select{flex:1 1 auto}.whg-settings-key .whg-settings-toggle{flex:0 0 auto;justify-self:auto}',
   '.whg-settings-select{box-sizing:border-box;width:100%;min-width:0;padding:7px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:13px;line-height:1.4}',
   '.whg-settings-message{min-height:18px;margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}',
   '.whg-settings-message.error{color:var(--dsw-alias-label-error,#c33)}',
@@ -726,6 +739,19 @@ function PluginSettingsCard(): React.ReactElement {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [catalogError, setCatalogError] = useState('')
+  const [keyDraft, setKeyDraft] = useState('')
+  const [keySaving, setKeySaving] = useState(false)
+  const [keyMessage, setKeyMessage] = useState('')
+  // The scope arrives after this card can already be mounted, can go
+  // read-only, can vanish on a disconnect and can be REPLACED on reconnect.
+  // subscribeSettingsScope follows all four; subscribing to whichever
+  // controller happened to exist at mount observes none of them.
+  const keyScopeSnapshot = useSyncExternalStore(
+    subscribeSettingsScope,
+    settingsScopeSnapshot,
+    noSettingsScopeSnapshot,
+  )
+  const keyEditable = scopeAcceptsWrites(keyScopeSnapshot)
 
   useEffect(() => {
     let alive = true
@@ -780,6 +806,42 @@ function PluginSettingsCard(): React.ReactElement {
     }).catch(() => { /* the card already shows the last usable catalog */ })
     return () => { alive = false }
   }, [open])
+
+  /**
+   * Write the DashScope key through the settings namespace.
+   *
+   * The key is the one setting here that is not the plugin's own state, so it
+   * does not travel over the plugin's API: it is declared `role('secret')` and
+   * the Host strips it before a read leaves, which is also why the field never
+   * shows what is stored. A blank draft writes nothing and keeps the stored
+   * key; the card only asks the plugin afterwards WHETHER one is now set.
+   *
+   * Confirming it is the hard part, and saveDashscopeKey carries the reasoning
+   * for why nothing observable after the fact can do it — the value cannot be
+   * read back, "a key exists" is already true during a rotation, and a moved
+   * revision is consistent with both an accepted write and one refused because
+   * somebody else moved it. The draft survives a failure, because a cleared
+   * field the user cannot read back is a key they must go find again.
+   */
+  function saveKey(): void {
+    const scope = settingsScope()
+    const writer = settingsWriter()
+    const value = keyDraft.trim()
+    if (!scope || !writer || !keyEditable || keySaving || !value) return
+    setKeySaving(true)
+    setKeyMessage('正在保存密钥…')
+    saveDashscopeKey(scope, writer, value).then(async (accepted) => {
+      const refreshed = await api('settings-get')
+      const next = settingsFromResult(refreshed) || refreshed
+      setSettings(next)
+      if (!accepted) throw new Error('Host 拒绝了这次写入，可能有另一处同时改了设置')
+      if (!next || next.dashscopeKeySet !== true) throw new Error('插件还没有读到这把密钥')
+      setKeyDraft('')
+      setKeyMessage('密钥已保存，升级 CG 现在可用。')
+    }).catch((err) => {
+      setKeyMessage('密钥保存失败，请重试：' + String(err && err.message ? err.message : err))
+    }).finally(() => setKeySaving(false))
+  }
 
   function save(patch: any): void {
     if (saving) return
@@ -940,10 +1002,38 @@ function PluginSettingsCard(): React.ReactElement {
             }, optionText(model, '模型 ' + (index + 1)))),
           ),
         ),
+        React.createElement('label', { className: 'whg-settings-row' },
+          React.createElement('span', { className: 'whg-settings-copy' },
+            React.createElement('strong', null, 'DashScope 密钥'),
+            React.createElement('small', null, keyEditable
+              ? '升级 CG 需要它。key 写入 DSH 的设置文档，读取时在离开 Host 前被剥除，不会回到浏览器，也不进入本仓库。'
+              : keyScopeSnapshot.status === 'ready'
+                ? '当前设置来源是只读的，无法在这里写入。请改用 DASHSCOPE_API_KEY 环境变量启动 DSH。'
+                : '当前 Host 不支持在这里填写，请用 DASHSCOPE_API_KEY 环境变量启动 DSH。'),
+          ),
+          React.createElement('span', { className: 'whg-settings-key' },
+            React.createElement('input', {
+              autoComplete: 'off',
+              className: 'whg-settings-select',
+              disabled: !keyEditable || keySaving,
+              onChange: (event: any) => { setKeyDraft(String(event.target.value)) },
+              placeholder: settings && settings.dashscopeKeySet ? '已配置（留空保持不变）' : '尚未配置',
+              spellCheck: false,
+              type: 'password',
+              value: keyDraft,
+            }),
+            React.createElement('button', {
+              className: 'whg-settings-toggle',
+              disabled: !keyEditable || keySaving || !keyDraft.trim(),
+              onClick: saveKey,
+              type: 'button',
+            }, keySaving ? '保存中…' : '保存'),
+          ),
+        ),
         React.createElement('p', {
           className: 'whg-settings-message' + (error ? ' error' : ''),
           role: error ? 'alert' : 'status',
-        }, error || message || catalogError || '角色、模型和素材设置会在所有工作区共享，顶部标签也可以随时快捷切换。'),
+        }, error || message || keyMessage || catalogError || '角色、模型和素材设置会在所有工作区共享，顶部标签也可以随时快捷切换。'),
       )
       : null,
   )
@@ -3274,6 +3364,39 @@ export function apply(ctx: any): void {
       { name: 'settings.plugin.item', key: WHALE_SETTINGS_NS },
       () => React.createElement(PluginSettingsCard),
     ))
+    // SettingsScopeBinder.bind rides the CALLER's fiber for the settings
+    // transport, so the scope is bound one level deeper than the card. Nested
+    // again, and guarded, because a host missing either service must still get
+    // the card: it simply loses the key row rather than the whole page.
+    const scopeCtx = scoped as {
+      inject(services: string[], callback: (inner: any) => void): void
+    }
+    scopeCtx.inject(['connection', 'remote'], (inner: any) => {
+      let bound: any = null
+      try {
+        bound = inner.settingsScope.bind({ namespace: WHALE_SETTINGS_NS })
+      } catch (err) {
+        return
+      }
+      // The same settings RPC SettingsScopeBinder hands the controller. Going
+      // one layer below the scope is deliberate and is the only way to learn
+      // whether the Host took the write; see saveDashscopeKey.
+      //
+      // Loopback only, matching how the Host picks the controller's mode: on a
+      // remote browser it keeps preferences process-local and refuses Host
+      // calls inside its own queue. Writing outside that queue means the
+      // boundary has to be enforced here, at the point the writer is built,
+      // rather than left to a rendered boolean.
+      const writer = inner.connection && inner.connection.isLoopback === true
+        ? createSettingsWriter(inner.connection.api && inner.connection.api.settings, WHALE_SETTINGS_NS)
+        : null
+      setSettingsScope(bound, writer)
+      // Released when this fiber goes: a disposed controller still resolves
+      // every write, so a card left holding one would report saves that never
+      // reached the Host. Only what THIS fiber published is cleared, or a late
+      // disposer would erase the controller a reconnect already installed.
+      inner.effect(() => () => { releaseSettingsScope(bound) })
+    })
   })
 
   ctx.effect(() => () => {

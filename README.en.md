@@ -159,6 +159,8 @@ dsh --profile web
 DASHSCOPE_API_KEY='your-local-key' dsh --profile web
 ~~~
 
+On DSH 0.1.0-rc.7 and later you can also enter it in this plugin's card under Settings → Plugins → Plugin configuration, in the DashScope key row. The key is stored in DSH's own settings document rather than in this repository, and it is declared a secret field, so it is stripped before the value leaves the Host and never reaches the browser. That is also why the input never shows the stored key: it reports only whether one is configured, and saving it blank keeps the key you already have.
+
 Do not write a real key into repository files or commit one to Git.
 
 ## Data and privacy

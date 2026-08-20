@@ -187,3 +187,90 @@ test('the redacted wire value carries no key, and neither does the schema', () =
   assert.equal(JSON.stringify(WhaleHostSettings.toJSON()).includes(KEY), false)
   assert.equal((WhaleHostSettings as any).dict.dashscopeApiKey.meta.default, '')
 })
+
+
+test('the settings payload says whether a key is configured, never the key', async () => {
+  // The card has to render "configured" without a secret reaching the browser,
+  // so the plugin answers with a boolean. This asserts the whole response, not
+  // just the field, because a leak anywhere in it is the same leak.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-secret-'))
+  const KEY = 'sk-this-must-never-cross'
+  const root = 'E:\\workspace\\secret'
+  const files = new Map<string, string>()
+  const sessions = [{
+    header: { version: 0, id: 'secret-session', cwd: root, createdAt: 1_000 },
+    live: true,
+    persisted: true,
+    events: [],
+  }]
+  let routeHandler: any = null
+  const services: any = {
+    fs: {
+      resolve: async () => root + '\\.whale-girl-save.json',
+      stat: async (target: string) => files.has(target) ? { type: 'file', version: 1 } : undefined,
+      readText: async (target: string) => {
+        if (!files.has(target)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return files.get(target)!
+      },
+      writeText: async (target: string, value: string) => {
+        const existed = files.has(target)
+        files.set(target, value)
+        return { operation: existed ? 'update' : 'create', version: 1 }
+      },
+    },
+    sandboxPolicy: { resolve: () => undefined },
+    sessions: { list: () => sessions },
+    workspaceRegistry: { list: () => [{ path: root }] },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+    dshHomePath: (...segments: string[]) => join(dshHome, ...segments),
+    sessionQuery: { listSessions: async () => sessions, listEvents: async () => [], filterSessions: async () => sessions },
+  }
+  const ctx: any = {
+    dshHomePath: services.dshHomePath,
+    webServer: { register: (route: any) => { routeHandler = route.handler } },
+    llm: {
+      listProviders: () => [{ id: 'p', name: 'P' }],
+      listModels: async () => [{ id: 'm', name: 'M', inputModalities: ['text'] }],
+      resolveModelInfo: async () => ({}),
+      stream: async function* (): AsyncGenerator<any> {
+        throw new Error('offline fixture')
+        yield { type: 'text-delta', text: '' }
+      },
+    },
+    inject: (names: string[], callback: Function) => {
+      // An unsatisfied cordis injection never calls back. Answering a request
+      // for a service this fake host does not have is what let a missing
+      // service look available to the code under test.
+      if (names.includes('settings')) return
+      if (names.includes('sessionQuery')) callback({ sessionQuery: services.sessionQuery })
+      else callback(services)
+    },
+    on: () => undefined,
+    effect: (callback: Function) => callback(),
+  }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    apply(ctx, { ...baseConfig(), dashscopeApiKey: KEY }, { nativeGlobalIo: nativeFs })
+    const req: any = Readable.from([JSON.stringify({ action: 'settings-get', args: { sessionId: 'secret-session' } })])
+    req.method = 'POST'
+    let body = ''
+    await routeHandler(req, { writeHead: () => undefined, end: (value: string) => { body = value } })
+
+    assert.equal(JSON.parse(body).dashscopeKeySet, true, 'the card can say a key is configured')
+    assert.ok(!body.includes(KEY), 'the key itself is nowhere in the response')
+
+    // And the negative: no key configured reads as not configured.
+    let empty: any = null
+    const ctx2 = { ...ctx, webServer: { register: (route: any) => { empty = route.handler } } }
+    apply(ctx2 as any, { ...baseConfig(), dashscopeApiKey: '' }, { nativeGlobalIo: nativeFs })
+    const req2: any = Readable.from([JSON.stringify({ action: 'settings-get', args: { sessionId: 'secret-session' } })])
+    req2.method = 'POST'
+    let body2 = ''
+    await empty(req2, { writeHead: () => undefined, end: (value: string) => { body2 = value } })
+    assert.equal(JSON.parse(body2).dashscopeKeySet, false)
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
