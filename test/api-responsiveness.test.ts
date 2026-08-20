@@ -80,6 +80,10 @@ function responsiveHarness(options: {
       stream,
     },
     inject: (names: string[], callback: Function) => {
+      // An unsatisfied cordis injection never calls back. Answering a request
+      // for a service this fake host does not have is what let a missing
+      // service look available to the code under test.
+      if (names.includes('settings')) return
       if (names.includes('sessionQuery')) callback({ sessionQuery: services.sessionQuery })
       else callback(services)
     },

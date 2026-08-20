@@ -175,6 +175,10 @@ function makeHarness(options: {
       },
     },
     inject: (names: string[], callback: Function) => {
+      // An unsatisfied cordis injection never calls back. Answering a request
+      // for a service this fake host does not have is what let a missing
+      // service look available to the code under test.
+      if (names.includes('settings')) return
       if (names.includes('sessionQuery')) callback({ sessionQuery: services.sessionQuery })
       // A profile without the web seam simply never fires this callback, which
       // is what the optional-injection contract has to survive.

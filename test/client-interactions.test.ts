@@ -43,3 +43,11 @@ test('available reply choices are not hidden by the latest line author', () => {
   assert.match(dialogue, /const showChoices = Array\.isArray\(s\.choices\) && s\.choices\.length > 0/)
   assert.doesNotMatch(dialogue, /last\.who === 'heroine' && s\.choices/)
 })
+
+test('both halves take the settings namespace from one module', () => {
+  // The Settings -> Plugins tab renders the intersection of served namespaces
+  // and registered cards, so a drift between the two halves does not error —
+  // the card just stops appearing.
+  assert.match(source, /import \{ WHALE_SETTINGS_NS \} from '\.\.\/settings-namespace\.ts'/)
+  assert.doesNotMatch(source, /const WHALE_SETTINGS_NS =/, 'the browser half does not redeclare it')
+})

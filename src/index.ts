@@ -539,11 +539,20 @@ const CANNED_LINES = new Set([
 export const name = 'whale-galgame'
 export const inject = ['webServer', 'llm']
 
-export function apply(
+/**
+ * `async` is load-bearing and is not about awaiting anything in this body — the
+ * whole body still runs synchronously up to its final `return`. Cordis decides
+ * how to invoke a plugin with `isConstructor()`, which is true for any function
+ * carrying a `prototype`; a plain declaration is therefore called with `new`,
+ * the returned promise becomes the instance, and since a Promise has no
+ * `[symbols.init]` cordis marks the fiber active without ever seeing it. An
+ * async function has no `prototype`, so cordis calls it and awaits the result.
+ */
+export async function apply(
   ctx: any,
   config: any = {},
   internals: { nativeGlobalIo?: NativeGlobalIo; nativeWorkspaceIo?: NativeGlobalIo } = {},
-): void {
+): Promise<void> {
   const webServer = ctx.webServer
   const llm = ctx.llm
   const cfg = {
@@ -578,6 +587,46 @@ export function apply(
     chatProvider: typeof config.chatProvider === 'string' ? config.chatProvider : 'deepseek-official',
     chatModel: typeof config.chatModel === 'string' ? config.chatModel : 'deepseek-v4-flash',
   }
+
+  // Serve a settings namespace. Besides making the DashScope block editable
+  // without hand-writing YAML, this is what lets the configuration card render
+  // at all: the Settings -> Plugins tab dispatches its keyed slot once per
+  // served namespace, so a plugin that serves none has nowhere to appear.
+  //
+  // DYNAMIC on purpose, and the whole degradation story depends on it: that
+  // module imports @deepseek-ai/dsh-settings and @deepseek-ai/schemastery from
+  // the Host's module tree, which a dsh older than 0.1.0-rc.7 does not have.
+  // Static imports are resolved before a line of this file runs, so writing
+  // this as one would not cost those hosts the card — it would cost them the
+  // plugin, with ERR_MODULE_NOT_FOUND and no pet and no galgame tab. Loaded
+  // this way the bundler emits it as a separate chunk, and an older host takes
+  // the handler below and carries on with the entry configuration as composed.
+  //
+  // The promise is RETURNED at the end of apply, and the declaration is
+  // `async` so cordis actually looks at it, which keeps this fiber out of
+  // ACTIVE until the namespace exists.
+  //
+  // That NARROWS a race it cannot close, and the difference is worth being
+  // exact about. The Settings → Plugins tab caches its own settings.describe()
+  // and re-reads only on `settings/document-updated` or `connection/reset`;
+  // registering a namespace emits neither, and dsh documents that limitation
+  // itself. So a describe that lands while this fiber is still importing
+  // caches a served list without this plugin, and the card stays missing until
+  // the next settings write or reconnect — a page reload is one. Nothing this
+  // plugin can do closes that; it would take an invalidation on registration
+  // upstream. Registering synchronously would avoid the window entirely, at
+  // the cost of the static import above, which costs every pre-rc.7 host the
+  // whole plugin.
+  const settingsReady = import('./settings.ts').then(
+    (mod) => mod.installWhaleSettings(ctx, cfg),
+    (err: any) => {
+      // The documented downgrade: a host without the optional peers. Quiet on
+      // purpose. Anything else happened on a host that should have worked, and
+      // silently losing the settings card would hide it.
+      if (err && err.code === 'ERR_MODULE_NOT_FOUND') return
+      console.error('whale-galgame settings namespace unavailable:', err && err.message ? err.message : String(err))
+    },
+  )
 
   let fs: any
   let sandboxPolicy: any
@@ -2660,6 +2709,8 @@ export function apply(
       sideStoryCooldownMax: SIDE_STORY_COOLDOWN_MAX_MINUTES,
       sideStorySeedSource: p.sideStorySeedSource === 'activity' ? 'activity' : 'auto',
       sideStoryWebAvailable: !!webSeam,
+      // Whether a DashScope key is configured, never the key itself: the card
+      // needs to say "configured" without a secret crossing to the browser.
     }
   }
 
@@ -5512,4 +5563,10 @@ export function apply(
       console.error('whale-galgame initial state load failed:', err && err.message ? err.message : String(err))
     })
   })
+
+  // Everything above is synchronous — an async function body runs to its first
+  // await, and there is none — so a caller that ignores the returned promise,
+  // the test harnesses for instance, still gets a fully wired plugin. Cordis
+  // awaits it, which is what closes the served-namespace race.
+  return settingsReady
 }

@@ -9,6 +9,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { WHALE_ART } from './art.generated'
+import { WHALE_SETTINGS_NS } from '../settings-namespace.ts'
 
 const CSS = [
   // ── pet ────────────────────────────────────────────────────────────────
@@ -3255,10 +3256,25 @@ export function apply(ctx: any): void {
   ))
 
   // Public DSH extension point: Settings → Plugins → Plugin configuration.
-  slots.inject('settings.plugin.item', () => slots.register(
-    { name: 'settings.plugin.item', id: 'whale-galgame', order: 30 },
-    () => React.createElement(PluginSettingsCard),
-  ))
+  //
+  // `settings.plugin.item` is a KEYED slot, not a list slot: registering with
+  // `id`/`order` and no `key` throws at load time, which is why this card never
+  // reached the page. The key must be a settings namespace the Host serves —
+  // the tab renders the intersection of served namespaces and registered cards
+  // — and src/settings.ts registers ours.
+  //
+  // Registered through a NESTED inject on purpose: naming `settingsScope` in
+  // the module-level `inject` would keep the whole plugin unmounted on any host
+  // without that service (dsh < 0.1.0-rc.7), trading the pet and the galgame
+  // tab for a card those hosts cannot render anyway. Nested, the card simply
+  // does not appear there.
+  const settingsCtx = ctx as { inject(services: string[], callback: (scoped: any) => void): void }
+  settingsCtx.inject(['settingsScope'], (scoped: any) => {
+    scoped.slots.inject('settings.plugin.item', () => scoped.slots.register(
+      { name: 'settings.plugin.item', key: WHALE_SETTINGS_NS },
+      () => React.createElement(PluginSettingsCard),
+    ))
+  })
 
   ctx.effect(() => () => {
     style.remove()

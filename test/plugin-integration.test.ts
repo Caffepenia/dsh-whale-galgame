@@ -83,7 +83,12 @@ test('binds the active workspace, counts Harness usage, and consumes a safe acti
   const ctx: any = {
     webServer: { register: (route: any) => { routeHandler = route.handler } },
     llm,
-    inject: (_names: string[], callback: Function) => callback(services),
+    // An unsatisfied cordis injection never calls back, so a service this fake
+    // host does not have must not look available to the code under test.
+    inject: (names: string[], callback: Function) => {
+      if (names.includes('settings')) return
+      callback(services)
+    },
     on: (event: string, callback: Function) => { listeners.set(event, callback) },
     effect: (callback: Function) => callback(),
   }
@@ -208,7 +213,12 @@ test('migrates role-local backgrounds, preserves override behavior, and reloads 
       listModels: () => [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
       resolveModelInfo: async () => ({}),
     },
-    inject: (_names: string[], callback: Function) => callback(services),
+    // An unsatisfied cordis injection never calls back, so a service this fake
+    // host does not have must not look available to the code under test.
+    inject: (names: string[], callback: Function) => {
+      if (names.includes('settings')) return
+      callback(services)
+    },
     on: () => undefined,
     effect: (callback: Function) => callback(),
   }
@@ -393,7 +403,12 @@ test('stores safe role-local profile overrides and applies the effective profile
   const ctx: any = {
     webServer: { register: (route: any) => { routeHandler = route.handler } },
     llm,
-    inject: (_names: string[], callback: Function) => callback(services),
+    // An unsatisfied cordis injection never calls back, so a service this fake
+    // host does not have must not look available to the code under test.
+    inject: (names: string[], callback: Function) => {
+      if (names.includes('settings')) return
+      callback(services)
+    },
     on: () => undefined,
     effect: (callback: Function) => callback(),
   }

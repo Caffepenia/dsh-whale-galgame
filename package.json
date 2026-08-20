@@ -32,7 +32,7 @@
     "prune:art": "node scripts/prune-art.mjs",
     "audit:release": "node scripts/release-audit.mjs",
     "check": "node --check lib/index.js && node --check lib/client.js",
-    "test": "node --experimental-strip-types --test test/activity-context.test.ts test/plugin-integration.test.ts test/global-state.test.ts test/api-responsiveness.test.ts test/client-interactions.test.ts test/choices-continuity.test.ts test/side-story.test.ts",
+    "test": "node --experimental-strip-types --test test/activity-context.test.ts test/plugin-integration.test.ts test/global-state.test.ts test/api-responsiveness.test.ts test/client-interactions.test.ts test/choices-continuity.test.ts test/side-story.test.ts test/settings-namespace.test.ts",
     "verify": "npm run embed:art && npm run test && npm run build && npm run check && npm run audit:release"
   },
   "repository": {
@@ -64,6 +64,8 @@
     "src/index.ts",
     "src/activity-context.ts",
     "src/client/index.ts",
+    "src/settings.ts",
+    "src/settings-namespace.ts",
     "cordis.patch.yml",
     "LICENSE.md",
     "NOTICE.md",
@@ -73,7 +75,21 @@
     "tsdown.config.ts"
   ],
   "license": "SEE LICENSE IN LICENSE.md",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "^3.18.1",
     "lightningcss": "^1.32.0",
     "tsdown": "0.22.14"
   }
