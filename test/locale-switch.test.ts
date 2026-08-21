@@ -316,7 +316,6 @@ test('a line saved before segments existed keeps its text instead of breaking', 
   console.error = () => undefined
   try {
     const harness = makeHarness(dshHome)
-    await harness.post('view')
     await harness.post('settings-set', { characterMode: 'manual', characterId: 'chatgpt' })
 
     // Rewrite the global save the way a build without segments stored it.
@@ -328,7 +327,11 @@ test('a line saved before segments existed keeps its text instead of breaking', 
     await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
 
     const restarted = makeHarness(dshHome)
-    assert.equal(narratorOf(await restarted.post('view')), SWITCH_NOTICE)
+    const restored = await restarted.post('settings-set', { language: 'zh-TW' })
+    assert.equal(narratorOf(restored.view), SWITCH_NOTICE)
+    const hydrated = await storedNarrator(dshHome)
+    assert.equal(Object.hasOwn(hydrated, 'seg'), false, JSON.stringify(hydrated))
+    assert.equal(hydrated.text, SWITCH_NOTICE)
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
@@ -438,7 +441,6 @@ test('a segment naming a character this build does not have falls back to its te
   console.error = () => undefined
   try {
     const harness = makeHarness(dshHome)
-    await harness.post('view')
     await harness.post('settings-set', { characterMode: 'manual', characterId: 'chatgpt' })
 
     const global = globalSavePath(dshHome)
@@ -462,12 +464,14 @@ test('a segment naming a character this build does not have falls back to its te
 
 test('a built-in CG error follows locale changes without rewriting provider errors', async () => {
   const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-error-locale-'))
+  const providerHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-provider-locale-'))
   const originalConsoleError = console.error
   console.error = () => undefined
   try {
     const files = new Map<string, string>()
     const harness = makeHarness(dshHome, files)
-    await harness.post('view')
+    // settings-set initializes and persists without scheduling the background
+    // view maintenance that would race a directly prepared restart fixture.
     await harness.post('settings-set', { language: 'zh-TW' })
 
     const global = globalSavePath(dshHome)
@@ -501,22 +505,69 @@ test('a built-in CG error follows locale changes without rewriting provider erro
     state.cg = { cgId: 'cg-interrupted' }
     await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
 
-    const restarted = makeHarness(dshHome, files)
+    const providerGlobal = globalSavePath(providerHome)
+    const providerSaved = JSON.parse(JSON.stringify(saved))
+    const providerState = providerSaved.state || providerSaved
+    providerState.cg = { cgId: 'cg-provider-error' }
+    await nativeFs.mkdir(join(providerHome, 'storages', 'dsh-whale-galgame'), { recursive: true })
+    await nativeFs.writeFile(providerGlobal, JSON.stringify(providerSaved), 'utf8')
+
+    const restarted = makeHarness(dshHome, new Map(files))
     const interrupted = await restarted.post('view')
     assert.equal(interrupted.cg.error, '生成被重啟打斷，請重新觸發')
 
     const simplified = await restarted.post('settings-set', { language: 'zh-CN' })
     assert.equal(simplified.view.cg.error, '生成被重启打断，请重新触发')
 
-    // Make the provider collision current and prove response-edge translation
-    // is gated by provenance rather than by source-string equality.
-    const afterRestart = JSON.parse(await nativeFs.readFile(global, 'utf8'))
-    const afterRestartState = afterRestart.state || afterRestart
-    afterRestartState.cg = { cgId: 'cg-provider-error' }
-    await nativeFs.writeFile(global, JSON.stringify(afterRestart), 'utf8')
-    const providerRestart = makeHarness(dshHome, files)
+    // The independent pre-start fixture proves response-edge translation is
+    // gated by provenance rather than by source-string equality.
+    const providerRestart = makeHarness(providerHome, new Map(files))
     const traditional = await providerRestart.post('settings-set', { language: 'zh-TW' })
     assert.equal(traditional.view.cg.error, '找不到这场小剧场的记录')
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+    rmSync(providerHome, { recursive: true, force: true })
+  }
+})
+
+test('an unknown persisted CG error key cannot claim built-in provenance', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-error-key-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const files = new Map<string, string>()
+    const harness = makeHarness(dshHome, files)
+    await harness.post('settings-set', { language: 'zh-TW' })
+
+    const global = globalSavePath(dshHome)
+    const saved = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const state = saved.state || saved
+    state.characters.deepseek.cgs.push({
+      id: 'cg-untrusted-error-key',
+      status: 'failed',
+      dataUrl: null,
+      prompt: null,
+      charId: 'deepseek',
+      level: 1,
+      at: 1,
+      seen: false,
+      savedAsBg: false,
+      error: 'provider error that must remain verbatim',
+      errorKey: 'provider.error.not-on-the-built-in-allowlist',
+    })
+    state.cg = { cgId: 'cg-untrusted-error-key' }
+    await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
+
+    const restarted = makeHarness(dshHome, new Map(files))
+    const restored = await restarted.post('settings-set', { language: 'zh-TW' })
+    assert.equal(restored.view.cg.error, 'provider error that must remain verbatim')
+
+    const resaved = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const resavedState = resaved.state || resaved
+    const record = resavedState.characters.deepseek.cgs.find((cg: any) => cg.id === 'cg-untrusted-error-key')
+    assert.equal(record.error, 'provider error that must remain verbatim')
+    assert.equal(record.errorKey, null)
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
@@ -530,7 +581,6 @@ test('an unsafe legacy CG prompt keeps its locale-independent replacement', asyn
   try {
     const files = new Map<string, string>()
     const harness = makeHarness(dshHome, files)
-    await harness.post('view')
     await harness.post('settings-set', { language: 'zh-TW' })
 
     const global = globalSavePath(dshHome)
