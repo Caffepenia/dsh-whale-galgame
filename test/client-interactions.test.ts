@@ -12,6 +12,19 @@ function section(start: string, end: string): string {
   return source.slice(from, to)
 }
 
+function classifierAlternatives(body: string, result: string): string[] {
+  const match = body.match(new RegExp("if \\(/([^\\n/]+)/\\.test\\(last\\)\\) return '" + result + "'"))
+  assert.ok(match, 'missing ' + result + ' fallback classifier')
+  return match[1].split('|')
+}
+
+function assertTwinPairs(alternatives: string[], pairs: [string, string][]): void {
+  for (const [simplified, traditional] of pairs) {
+    assert.ok(alternatives.includes(simplified), 'missing Simplified control: ' + simplified)
+    assert.ok(alternatives.includes(traditional), 'missing Traditional twin: ' + traditional)
+  }
+}
+
 test('picker catalogue reads never reuse the mutation lock', () => {
   const loader = section('function loadPickerData()', 'function openPicker(')
   const option = section('function pickerOption(', 'function characterPicker(')
@@ -42,4 +55,47 @@ test('available reply choices are not hidden by the latest line author', () => {
   const dialogue = section('function dialogue()', 'function cgModal(')
   assert.match(dialogue, /const showChoices = Array\.isArray\(s\.choices\) && s\.choices\.length > 0/)
   assert.doesNotMatch(dialogue, /last\.who === 'heroine' && s\.choices/)
+})
+
+test('user emotion fallback literals include their Traditional twins', () => {
+  const emotion = section('function emotionOf()', 'function moodOf()')
+  assertTwinPairs(classifierAlternatives(emotion, 'angry'), [
+    ['生气', '生氣'], ['讨厌', '討厭'], ['烦', '煩'], ['滚', '滾'],
+    ['过分', '過分'], ['气死', '氣死'], ['可恶', '可惡'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'frightened'), [
+    ['吓', '嚇'], ['惊', '驚'], ['别吓我', '別嚇我'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'exasperated'), [
+    ['无奈', '無奈'], ['无语', '無語'], ['头疼', '頭疼'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'starry'), [
+    ['梦想', '夢想'], ['心动', '心動'], ['闪闪', '閃閃'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'shy'), [
+    ['呜', '嗚'], ['脸红', '臉紅'], ['别这样', '別這樣'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'confused'), [
+    ['什么', '什麼'], ['为啥', '為啥'], ['没听懂', '沒聽懂'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'serious'), [
+    ['认真', '認真'], ['学习', '學習'], ['讨论', '討論'], ['问题', '問題'],
+    ['严肃', '嚴肅'], ['报告', '報告'], ['项目', '項目'],
+  ])
+  assertTwinPairs(classifierAlternatives(emotion, 'cheerful'), [
+    ['开心', '開心'], ['高兴', '高興'], ['喜欢', '喜歡'], ['爱', '愛'], ['亲亲', '親親'],
+  ])
+})
+
+test('model mood fallback literals include their Traditional twins', () => {
+  const mood = section('function moodOf()', 'function lastLine()')
+  assertTwinPairs(classifierAlternatives(mood, 'angry'), [
+    ['生气', '生氣'], ['讨厌', '討厭'], ['走开', '走開'], ['过分', '過分'], ['烦', '煩'],
+  ])
+  assertTwinPairs(classifierAlternatives(mood, 'happy'), [
+    ['喜欢', '喜歡'], ['开心', '開心'],
+  ])
+  assertTwinPairs(classifierAlternatives(mood, 'shy'), [
+    ['呜', '嗚'], ['脸红', '臉紅'], ['别这样', '別這樣'],
+  ])
 })

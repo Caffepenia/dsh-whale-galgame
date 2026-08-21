@@ -4981,7 +4981,7 @@ export function apply(
             const before = c.affection
             const delta = prepared.selectedChoice
               ? (prepared.selectedChoice.effect === 1 ? 1 : prepared.selectedChoice.effect === -1 ? -1 : 0)
-              : (/喜欢|爱|可爱|想你|陪你|晚安|早安|抱抱|亲亲|约会|月圆/.test(text) ? 1 : (/讨厌|烦|滚|走开|无聊|再见/.test(text) ? -1 : 0))
+              : (/喜欢|爱|可爱|想你|陪你|晚安|早安|抱抱|亲亲|约会|月圆|喜歡|愛|可愛|親親|約會|月圓/.test(text) ? 1 : (/讨厌|烦|滚|走开|无聊|再见|討厭|煩|滾|走開|無聊|再見/.test(text) ? -1 : 0))
             c.affection = Math.max(0, before + delta)
             const leveled = checkLevelUp(prepared.charId, c)
             await save(settledBeforeChat.changed || c.affection !== before || leveled ? 'both' : 'workspace')

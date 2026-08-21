@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { Readable } from 'node:stream'
 import test from 'node:test'
 import { collectHarnessActivities } from '../src/activity-context.ts'
+import { apply } from '../src/index.ts'
 
 const root = 'E:\\workspace\\demo'
 const now = 2_000_000_000_000
@@ -106,4 +108,109 @@ test('a new term does not steal a sentence from an earlier category', () => {
   assert.equal(classify('幫我修正這個介面的排版'), 'visual-design')
   assert.equal(classify('幫我寫一份系統設計文件的初稿'), 'document-writing')
   assert.equal(classify('這個程式一直丟例外，幫我追一下堆疊'), 'code-debug')
+})
+
+function makeAffectionHarness() {
+  const sessionId = 'traditional-affection'
+  const workspace = 'E:\\workspace\\traditional-affection'
+  const sessions = [{
+    header: { version: 0, id: sessionId, cwd: workspace, createdAt: now },
+    live: true,
+    persisted: true,
+    events: [],
+  }]
+  let routeHandler: any = null
+  let saved = ''
+  const services: any = {
+    fs: {
+      resolve: async (name: string) => workspace + '\\' + name,
+      readText: async () => { throw new Error('ENOENT: no save yet') },
+      writeText: async (_target: string, value: string) => { saved = value },
+    },
+    sandboxPolicy: { resolve: () => undefined },
+    sessions: { list: () => sessions },
+    workspaceRegistry: { list: () => [{ path: workspace }] },
+    agentDefaultModel: {
+      currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }),
+    },
+    sessionQuery: {
+      listSessions: async () => sessions,
+      listEvents: async () => [],
+      filterSessions: async () => sessions,
+    },
+  }
+  const ctx: any = {
+    webServer: { register: (route: any) => { routeHandler = route.handler } },
+    llm: {
+      listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }],
+      listModels: async () => [{
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        inputModalities: ['text'],
+      }],
+      resolveModelInfo: async () => ({}),
+      stream: async function* (request: any): AsyncGenerator<any> {
+        const system = String(request && request.system || '')
+        const text = system.includes('情绪分类器')
+          ? 'normal'
+          : system.includes('对话选项生成器')
+            ? '{"positive":"靠近一点","neutral":"继续聊聊","negative":"先静一静"}'
+            : '我也喜歡和你說話。'
+        yield { type: 'text-delta', text }
+      },
+    },
+    inject: (names: string[], callback: Function) => {
+      if (names.includes('sessionQuery')) callback({ sessionQuery: services.sessionQuery })
+      else callback(services)
+    },
+    on: () => undefined,
+    effect: (callback: Function) => callback(),
+  }
+  apply(ctx, { chatProvider: 'deepseek-official', chatModel: 'deepseek-v4-flash' })
+
+  async function post(action: string, args: any = {}): Promise<any> {
+    assert.equal(typeof routeHandler, 'function')
+    const req: any = Readable.from([JSON.stringify({ action, args: { ...args, sessionId } })])
+    req.method = 'POST'
+    let status = 0
+    let body = ''
+    const res = {
+      writeHead: (nextStatus: number) => { status = nextStatus },
+      end: (value: string) => { body = value },
+    }
+    await routeHandler(req, res)
+    assert.equal(status, 200, body)
+    return JSON.parse(body)
+  }
+
+  return { post, saved: () => saved }
+}
+
+test('typed chat raises affection for both Simplified and Traditional input', async () => {
+  const pairs: [string, string][] = [
+    ['喜欢', '喜歡'], ['爱', '愛'], ['可爱', '可愛'], ['亲亲', '親親'],
+    ['约会', '約會'], ['月圆', '月圓'],
+  ]
+  for (const [simplified, traditional] of pairs) {
+    const harness = makeAffectionHarness()
+    assert.equal((await harness.post('view')).affection, 0)
+    assert.equal((await harness.post('chat', { text: '我' + simplified + '你' })).affection, 1)
+    assert.equal((await harness.post('chat', { text: '我' + traditional + '你' })).affection, 2)
+    assert.equal(JSON.parse(harness.saved()).characters.deepseek.affection, 2)
+  }
+})
+
+test('typed chat lowers affection for both Simplified and Traditional input', async () => {
+  const pairs: [string, string][] = [
+    ['讨厌', '討厭'], ['烦', '煩'], ['滚', '滾'], ['走开', '走開'],
+    ['无聊', '無聊'], ['再见', '再見'],
+  ]
+  for (const [simplified, traditional] of pairs) {
+    const harness = makeAffectionHarness()
+    await harness.post('view')
+    await harness.post('chat', { text: '我喜欢你' })
+    await harness.post('chat', { text: '我喜欢你' })
+    assert.equal((await harness.post('chat', { text: '我' + simplified + '你' })).affection, 1)
+    assert.equal((await harness.post('chat', { text: '我' + traditional + '你' })).affection, 0)
+  }
 })
