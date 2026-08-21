@@ -525,8 +525,38 @@ function builtInProfile(charId: string): Record<string, string> {
  * Rows are kept verbatim apart from `text`, so speaker, id and effect survive.
  * @param row - a stored `{ who, text }` line or `{ id, text, effect }` choice.
  */
-function localizedLine(row: any): any {
-  return row && typeof row.text === 'string' ? { ...row, text: t(row.text) } : row
+/**
+ * Whether a stored row is text the PLUGIN wrote, as opposed to text a person
+ * typed or a model produced.
+ *
+ * Source-string-as-key means any line can accidentally BE a key: a user who
+ * types a sentence the plugin also ships would have their own words rewritten
+ * on the way back, and so would a model reply that happens to match. Carrying
+ * `seg` is the plugin's signature — it is written only where the plugin
+ * composes copy — so it is what decides whether translation may touch a row at
+ * all. Rows saved before it existed have no signature and are shown as saved.
+ */
+function isPluginAuthored(row: any): boolean {
+  return !!row && Array.isArray(row.seg)
+}
+
+/**
+ * The only constructor for plugin-authored stored rows.
+ *
+ * Keeping the marker attachment here makes row transformations carry
+ * provenance deliberately instead of rebuilding an object and silently
+ * dropping `seg`.
+ */
+function pluginAuthoredRow(row: any, seg: any[]): any {
+  return {
+    ...row,
+    seg: seg.map((part: any) => typeof part === 'string' ? part : { ...part }),
+  }
+}
+
+/** Copy provenance while changing the non-provenance fields of a stored row. */
+function carryPluginProvenance(source: any, row: any): any {
+  return isPluginAuthored(source) ? pluginAuthoredRow(row, source.seg) : row
 }
 
 function affectionCap(level: number): number {
@@ -548,6 +578,20 @@ const FALLBACK_CHOICES = {
   positive: '想再靠近你一点',
   neutral: '那就继续聊聊吧',
   negative: '先让我安静一下',
+}
+const FALLBACK_CHOICE_SOURCES = new Set(Object.values(FALLBACK_CHOICES))
+
+/**
+ * Saved choices may come from the model, so an arbitrary `seg` cannot be
+ * trusted as plugin provenance. Only the exact one-part source written by the
+ * fallback-choice constructor survives normalization.
+ */
+function normalizedFallbackChoiceSegments(choice: any, text: string): string[] | null {
+  if (!isPluginAuthored(choice)
+    || choice.seg.length !== 1
+    || choice.seg[0] !== text
+    || !FALLBACK_CHOICE_SOURCES.has(text)) return null
+  return [text]
 }
 
 const CANNED_LINES = [
@@ -577,6 +621,27 @@ const CANNED_LINES = [
 const OUTPUT_SCRIPT_RULE = '输出必须使用简体中文。'
 
 const CANNED_FALLBACK_TAIL = '说的话，我听到啦～（今天的深海信号有点弱，但心意传达到了哦）'
+const CG_ERROR_SKIT_NOT_FOUND = '找不到这场小剧场的记录'
+const CG_ERROR_RESTART_INTERRUPTED = '生成被重启打断，请重新触发'
+const CG_BUILT_IN_ERROR_KEYS = new Set([
+  CG_ERROR_SKIT_NOT_FOUND,
+  CG_ERROR_RESTART_INTERRUPTED,
+])
+
+function normalizedCgErrorKey(raw: any): string | null {
+  return typeof raw === 'string' && CG_BUILT_IN_ERROR_KEYS.has(raw) ? raw : null
+}
+
+function setBuiltInCgError(record: any, key: string): void {
+  record.error = null
+  record.errorKey = normalizedCgErrorKey(key)
+}
+
+function localizedCgError(record: any): string | null {
+  const key = normalizedCgErrorKey(record && record.errorKey)
+  if (key) return t(key)
+  return record && typeof record.error === 'string' && record.error ? record.error : null
+}
 
 function isCannedLine(raw: string): boolean {
   const line = raw.trim()
@@ -1107,7 +1172,8 @@ export function apply(
     // as they were on disk; only a multi-character choice carries the map.
     const effects = normalizeChoiceEffects(choice.effects)
     if (Object.keys(effects).length > 0) base.effects = effects
-    return base
+    const seg = normalizedFallbackChoiceSegments(choice, base.text)
+    return seg ? pluginAuthoredRow(base, seg) : base
   }
 
   function shuffleOnce<T>(items: T[]): T[] {
@@ -1137,7 +1203,7 @@ export function apply(
       || /\b(the user|assistant|analysis|reasoning|tool call|tool output|exec_command|apply_patch)\b/i.test(theme)
       || /https?:\/\/|\b[A-Za-z]:[\\/]/i.test(theme)
     if (unsafeLegacyTheme) {
-      return prompt.slice(0, markerAt) + t('温暖浪漫的日常氛围（旧版主题摘要已隐藏）')
+      return prompt.slice(0, markerAt) + '温暖浪漫的日常氛围（旧版主题摘要已隐藏）'
     }
     return prompt.slice(0, markerAt + marker.length) + theme.slice(0, 360)
   }
@@ -1147,6 +1213,7 @@ export function apply(
     const at = typeof raw.at === 'number' ? raw.at : Date.now()
     const dataUrl = typeof raw.dataUrl === 'string' && raw.dataUrl.startsWith('data:') ? raw.dataUrl : null
     const status = raw.status === 'failed' ? 'failed' : raw.status === 'generating' ? 'generating' : dataUrl ? 'ready' : 'failed'
+    const errorKey = normalizedCgErrorKey(raw.errorKey)
     return {
       id: typeof raw.id === 'string' && raw.id ? raw.id : 'legacy-cg-' + at + '-' + index,
       status,
@@ -1157,7 +1224,8 @@ export function apply(
       at,
       seen: raw.seen === true,
       savedAsBg: raw.savedAsBg === true,
-      error: typeof raw.error === 'string' && raw.error ? raw.error : null,
+      error: errorKey ? null : (typeof raw.error === 'string' && raw.error ? raw.error : null),
+      errorKey,
     }
   }
 
@@ -2173,19 +2241,38 @@ export function apply(
    * language switch — or a profile edit — re-renders them. Lines saved before
    * this existed have only `text` and keep the wording they were written with.
    */
-  function renderLine(row: any): any {
-    if (!row || !Array.isArray(row.seg)) return localizedLine(row)
-    const text = row.seg
-      .map((part: any) => typeof part === 'string'
-        ? t(part)
-        : String(effectiveProfileFor(String(part && part.id))[String(part && part.ref)] || ''))
-      .join('')
-    return { ...row, text }
+  /**
+   * Render segments, or null when the row names something this build cannot
+   * resolve — a character the roster no longer has, or a field that is not part
+   * of a profile. Substituting another character's name would be worse than
+   * showing the wording the row was saved with.
+   */
+  function renderSegments(seg: any[]): string | null {
+    const parts: string[] = []
+    for (const part of seg) {
+      if (typeof part === 'string') {
+        parts.push(t(part))
+        continue
+      }
+      const id = String(part && part.id)
+      const ref = String(part && part.ref)
+      if (!ROSTER[id] || !(PROFILE_FIELDS as readonly string[]).includes(ref)) return null
+      parts.push(String(effectiveProfileFor(id)[ref] || ''))
+    }
+    return parts.join('')
   }
 
-  /** A stored line that re-renders itself. See {@link renderLine}. */
+  /** One stored row as the browser receives it. `seg` is storage, not payload. */
+  function renderLine(row: any): any {
+    if (!isPluginAuthored(row)) return row
+    const { seg, ...rest } = row
+    const text = renderSegments(seg)
+    return text === null ? rest : { ...rest, text }
+  }
+
+  /** A stored row that re-renders itself on every read. See {@link renderLine}. */
   function composedLine(who: string, seg: any[]): any {
-    return renderLine({ who, seg })
+    return pluginAuthoredRow({ who, text: renderSegments(seg) || '' }, seg)
   }
 
   function profileResult(charId: string): any {
@@ -2357,7 +2444,7 @@ export function apply(
       }
       // Keep the heroine as the final speaker: the client may present reply
       // choices only while her line is current.
-      c.chatLines.push({ who: 'heroine', text: rawProfileFor(next).greeting })
+      c.chatLines.push(composedLine('heroine', [{ id: next, ref: 'greeting' }]))
       mutated = true
     }
     // Older global/workspace saves may already contain a timeline ending in
@@ -2566,7 +2653,7 @@ export function apply(
       // and passes through untouched. Already-translated text is not a key
       // either, so this is idempotent.
       history: c.chatLines.map(renderLine),
-      choices: (c.choices || []).slice(0, 3).map(localizedLine),
+      choices: (c.choices || []).slice(0, 3).map(renderLine),
       sideStory: sideStoryView(),
       chatUnlocked: true,
       modelOnline: s.modelOnline === true,
@@ -2575,6 +2662,11 @@ export function apply(
       modelLabel: s.characterModelLabel || '',
       lastModel: s.chatModelLabel || '',
       petEnabled: !s.preferences || s.preferences.petEnabled !== false,
+      // The browser translates its own copy, so the language has to ride the
+      // payload it always reads. Without it the game and the pet render in the
+      // module default until some other surface happens to fetch settings,
+      // which shows server text in one script beside client text in the other.
+      language: preferences.language,
       characterMode: preferences.characterMode,
       characterId: preferences.characterMode === 'manual' ? preferences.characterId : null,
       chatMode: preferences.chatMode,
@@ -2592,7 +2684,7 @@ export function apply(
         status: cg.status,
         seen: cg.seen === true,
         savedAsBg: cg.savedAsBg === true,
-        error: cg.error || null,
+        error: localizedCgError(cg),
       } : null,
     }
   }
@@ -2918,9 +3010,18 @@ export function apply(
 
   function fallbackChoicesFor(): any[] {
     return shuffleOnce([
-      { id: makeId('choice-positive'), text: FALLBACK_CHOICES.positive, effect: 1 },
-      { id: makeId('choice-neutral'), text: FALLBACK_CHOICES.neutral, effect: 0 },
-      { id: makeId('choice-negative'), text: FALLBACK_CHOICES.negative, effect: -1 },
+      pluginAuthoredRow(
+        { id: makeId('choice-positive'), text: FALLBACK_CHOICES.positive, effect: 1 },
+        [FALLBACK_CHOICES.positive],
+      ),
+      pluginAuthoredRow(
+        { id: makeId('choice-neutral'), text: FALLBACK_CHOICES.neutral, effect: 0 },
+        [FALLBACK_CHOICES.neutral],
+      ),
+      pluginAuthoredRow(
+        { id: makeId('choice-negative'), text: FALLBACK_CHOICES.negative, effect: -1 },
+        [FALLBACK_CHOICES.negative],
+      ),
     ])
   }
 
@@ -3476,18 +3577,19 @@ export function apply(
     const skit = sideStoryState().transcripts.find((row: any) => row.id === skitId)
     if (!skit) {
       record.status = 'failed'
-      record.error = t('找不到这场小剧场的记录')
+      setBuiltInCgError(record, CG_ERROR_SKIT_NOT_FOUND)
       await save('global').catch(() => undefined)
       return
     }
     const who = skit.cast.map((id: string) => effectiveProfileFor(id).visual).filter(Boolean)
     const names = skit.cast.map((id: string) => effectiveProfileFor(id).displayName).join('、')
+    // Kept at its source: see generateCg below.
     const prompt = [
-      t('精美galgame风格合影CG插画，横向16:9构图，唯美光效，高清细节，无文字无边框'),
-      t('同框 ') + skit.cast.length + t(' 位角色，彼此有互动和眼神交流，不是各自站开'),
-      ...who.map((visual: string, index: number) => t('角色') + (index + 1) + '：' + visual),
-      t('场景：深海女仆工坊，') + (skit.seed || t('寻常的一天')),
-      t('气氛轻松愉快，像刚闹完一场的合影'),
+      '精美galgame风格合影CG插画，横向16:9构图，唯美光效，高清细节，无文字无边框',
+      '同框 ' + skit.cast.length + ' 位角色，彼此有互动和眼神交流，不是各自站开',
+      ...who.map((visual: string, index: number) => '角色' + (index + 1) + '：' + visual),
+      '场景：深海女仆工坊，' + (skit.seed || '寻常的一天'),
+      '气氛轻松愉快，像刚闹完一场的合影',
     ].join('，')
     await renderCgFromPrompt(record, prompt, t('合影 · ') + names)
   }
@@ -3501,16 +3603,23 @@ export function apply(
       await refreshActivityCache()
       const scopedActivity = globalActivityCandidates()
       const theme = scopedActivity.length > 0 ? activityCgTheme(scopedActivity[0]) : ''
+      // Deliberately NOT translated. This string is persisted and then parsed
+      // by sanitizeStoredCgPrompt, whose markers are Simplified because saves
+      // written by earlier versions already contain them. A translated prompt
+      // fails that check on the next load and loses its activity theme. It is
+      // also the exact instruction sent to the image model, so the gallery
+      // showing it verbatim is what actually happened.
       prompt = [
-        t('精美galgame风格特殊CG插画，横向16:9桌面壁纸构图，唯美光效，高清细节，无文字无边框'),
-        t('角色：') + profile.visual + t('，表情幸福温柔'),
-        t('场景：深海女仆工坊，烛光与月光'),
-        t('等级 Lv.') + level + t(' 的纪念CG'),
-        theme ? '画面元素呼应对方最近的经历与工作：' + theme : t('温暖浪漫的日常氛围'),
+        '精美galgame风格特殊CG插画，横向16:9桌面壁纸构图，唯美光效，高清细节，无文字无边框',
+        '角色：' + profile.visual + '，表情幸福温柔',
+        '场景：深海女仆工坊，烛光与月光',
+        '等级 Lv.' + level + ' 的纪念CG',
+        theme ? '画面元素呼应对方最近的经历与工作：' + theme : '温暖浪漫的日常氛围',
       ].join('，')
     } catch (err: any) {
       record.status = 'failed'
       record.dataUrl = null
+      record.errorKey = null
       record.error = err && err.message ? err.message : String(err)
       await save('global').catch(() => undefined)
       return
@@ -3579,9 +3688,11 @@ export function apply(
       record.dataUrl = dataUrl
       record.prompt = prompt
       record.error = null
+      record.errorKey = null
     } catch (err: any) {
       record.status = 'failed'
       record.dataUrl = null
+      record.errorKey = null
       record.error = err && err.message ? err.message : String(err)
     }
     if (label && record.status === 'ready') record.label = label
@@ -3957,7 +4068,7 @@ export function apply(
       }
       if (cg.status === 'generating') {
         cg.status = 'failed'
-        cg.error = t('生成被重启打断，请重新触发')
+        setBuiltInCgError(cg, CG_ERROR_RESTART_INTERRUPTED)
         needsSave = true
       }
     }
@@ -4036,7 +4147,7 @@ export function apply(
         cg.prompt = sanitizeStoredCgPrompt(cg.prompt)
         if (cg.status === 'generating') {
           cg.status = 'failed'
-          cg.error = t('生成被重启打断，请重新触发')
+          setBuiltInCgError(cg, CG_ERROR_RESTART_INTERRUPTED)
         }
       }
     }
@@ -4387,7 +4498,7 @@ export function apply(
         }
         if (cg.status === 'generating') {
           cg.status = 'failed'
-          cg.error = t('生成被重启打断，请重新触发')
+          setBuiltInCgError(cg, CG_ERROR_RESTART_INTERRUPTED)
           needsSave = true
         }
       }
@@ -4929,7 +5040,7 @@ export function apply(
           PROFILE_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(supplied, field)),
         )
         if (initialGreetingIndex >= 0) {
-          character.chatLines[initialGreetingIndex].text = effectiveProfileFor(charId).greeting
+          character.chatLines[initialGreetingIndex] = composedLine('heroine', [{ id: charId, ref: 'greeting' }])
         }
         try {
           await save('both')
@@ -4970,7 +5081,7 @@ export function apply(
           : null
         character.profileOverrides = {}
         claimGlobalCharacter('profiles', charId)
-        if (initialGreetingIndex >= 0) character.chatLines[initialGreetingIndex].text = builtInProfile(charId).greeting
+        if (initialGreetingIndex >= 0) character.chatLines[initialGreetingIndex] = composedLine('heroine', [{ id: charId, ref: 'greeting' }])
         try {
           await save('both')
         } catch (err) {
@@ -5065,7 +5176,14 @@ export function apply(
                       // instruction names the output language, so handing the
                       // model a greeting still in the pre-switch language would
                       // anchor it there and undo that instruction.
-                      content: [{ type: 'text', text: t(m.text) }],
+                      // As recorded. Rewriting a person's own words on the way
+                      // into a prompt is worse than showing the model a line in
+                      // the other script, and OUTPUT_SCRIPT_RULE already names
+                      // the script the answer must use.
+                      content: [{
+                        type: 'text',
+                        text: isPluginAuthored(m) ? (renderSegments(m.seg) ?? m.text) : m.text,
+                      }],
                       source: m.role === 'assistant'
                         ? { kind: 'model', provider: sel.provider, model: sel.model }
                         : { kind: 'user' },
@@ -5098,16 +5216,23 @@ export function apply(
             const settledBeforeChat = settle()
             const c = s.characters[prepared.charId]
             if (!c) throw new Error('chat character became unavailable before commit')
-            c.log.push({ role: 'user', text })
-            c.chatLines.push({
+            const selectedText = prepared.selectedChoice ? prepared.selectedChoice.text : text
+            const logEntry = { role: 'user', text: selectedText }
+            c.log.push(prepared.selectedChoice
+              ? carryPluginProvenance(prepared.selectedChoice, logEntry)
+              : logEntry)
+            const historyEntry = {
               who: 'user',
               // A picked choice is the plugin's own text, so the save keeps the
               // stored wording and translates it on the way out like every other
               // line. Anything typed is the user's words and is kept verbatim.
-              text: prepared.selectedChoice ? prepared.selectedChoice.text : text,
+              text: selectedText,
               emotion,
               choiceId: prepared.selectedChoice ? prepared.selectedChoice.id : null,
-            })
+            }
+            c.chatLines.push(prepared.selectedChoice
+              ? carryPluginProvenance(prepared.selectedChoice, historyEntry)
+              : historyEntry)
             c.choices = []
             s.chatModelLabel = sel && sel.model ? String(sel.model) : ''
             s.lastModel = s.chatModelLabel

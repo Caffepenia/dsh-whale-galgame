@@ -466,7 +466,12 @@ test('stores safe role-local profile overrides and applies the effective profile
   }
   assert.equal(failedGreetingSave.ok, false)
   assert.equal(diskSave, saveBeforeGreetingFailure)
-  assert.deepEqual(failedGreetingSave.view.history, beforeProfileHistory)
+  // `seg` is how a plugin-authored row remembers its sources; it is storage,
+  // not payload, so the view drops it and everything else is served as stored.
+  assert.deepEqual(
+    failedGreetingSave.view.history,
+    beforeProfileHistory.map(({ seg, ...row }: any) => row),
+  )
 
   const rawTone = '轻'.repeat(700)
   const rawPersona = '沉静、好奇，喜欢听雨。\u0007' + '设'.repeat(1300)

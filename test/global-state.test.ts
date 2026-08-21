@@ -369,7 +369,12 @@ test('keeps one continuous game timeline while workspaces remain event-source ma
   assert.equal(global.bg, PIXEL_ALT)
   assert.deepEqual(global.characters.deepseek.log.map((entry: any) => entry.text), ['A-private-log', 'B-private-log'])
   assert.deepEqual(global.characters.deepseek.chatLines.map((entry: any) => entry.text), ['A-private-history', 'B-private-history'])
-  assert.deepEqual(global.characters.deepseek.choices, choicesA)
+  // Stored choices carry `seg`, the sources a plugin-authored line re-renders
+  // from. It is storage rather than payload, so the view drops it.
+  assert.deepEqual(
+    global.characters.deepseek.choices.map(({ seg, ...choice }: any) => choice),
+    choicesA,
+  )
   assert.deepEqual(global.characters.deepseek.activity.seen, ['activity-a123', 'activity-b123'])
 
   const workspaceA = JSON.parse(harness.files.get(workspaceFile(rootA)) || '{}')

@@ -36,6 +36,25 @@ test('auto follows the host locale, and zh-TW is reachable only by explicit choi
   assert.equal(resolveLocale('nonsense', 'zh'), 'zh-CN')
 })
 
+test('the framework sentinels exercise non-identity zh-TW translation', () => {
+  setLocale('zh-TW')
+  const cases = [
+    ['鲸鱼娘', '鯨魚娘'],
+    ['那就继续聊聊吧', '那就繼續聊聊吧'],
+    ['工作区主模型', '工作區主模型'],
+    ['把角色来源切换为 ', '把角色來源切換為 '],
+    [' 登场了。）', ' 登場了。）'],
+    ['「主人，又见面啦～今天也想听你说话呢。」', '「主人，又見面啦～今天也想聽你說話喔。」'],
+    ['温暖浪漫的日常氛围（旧版主题摘要已隐藏）', '溫暖浪漫的日常氛圍（舊版主題摘要已隱藏）'],
+    ['找不到这场小剧场的记录', '找不到這場小劇場的紀錄'],
+    ['生成被重启打断，请重新触发', '生成被重啟打斷，請重新觸發'],
+  ] as const
+  for (const [source, expected] of cases) {
+    assert.notEqual(expected, source)
+    assert.equal(t(source), expected)
+  }
+})
+
 test('activity text is translated where it is used, not where it is stored', () => {
   // Labels and hints are persisted, so they stay in zh-CN in the save file and
   // pass through t() only on their way into a prompt. With no table loaded the

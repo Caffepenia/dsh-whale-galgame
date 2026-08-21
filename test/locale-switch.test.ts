@@ -11,7 +11,7 @@ import { apply } from '../src/index.ts'
  * Drives the plugin over its own HTTP action surface, which is where a stored
  * line is turned into something the browser renders.
  */
-function makeHarness(dshHome: string, files = new Map<string, string>(), systems?: string[]) {
+function makeHarness(dshHome: string, files = new Map<string, string>(), systems?: string[], requests?: any[]) {
   const root = 'E:\\workspace\\locale-switch'
   const sessions = [{
     header: { version: 0, id: 'locale-session', cwd: root, createdAt: 1_000 },
@@ -58,6 +58,7 @@ function makeHarness(dshHome: string, files = new Map<string, string>(), systems
         if (!systems) throw new Error('no model in this fixture')
         const system = String(options && options.system || '')
         systems.push(system)
+        if (requests) requests.push(options)
         if (system.includes('情绪分类器')) yield { type: 'text-delta', text: 'normal' }
         else if (system.includes('对话选项生成器')) {
           yield { type: 'text-delta', text: '{"positive":"陪你休息一下","neutral":"继续聊聊吧","negative":"我想先静静"}' }
@@ -165,6 +166,29 @@ test('the greeting and the fallback choices are saved at their zh-CN sources', a
   }
 })
 
+test('a saved fallback choice keeps provenance after restart', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-choice-restart-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const files = new Map<string, string>()
+    const harness = makeHarness(dshHome, files)
+    await harness.post('view')
+    const switched = await harness.post('settings-set', { language: 'zh-TW' })
+    assert.ok(switched.view.choices.some((choice: any) => choice.text === '那就繼續聊聊吧'))
+
+    const restarted = makeHarness(dshHome, files)
+    const restored = await restarted.post('view')
+    assert.ok(
+      restored.choices.some((choice: any) => choice.text === '那就繼續聊聊吧'),
+      JSON.stringify(restored.choices.map((choice: any) => choice.text)),
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
 test('a picked choice is saved as the plugin\'s own text, a typed line verbatim', async () => {
   // The browser sends back the text it displayed, which has already been
   // translated. Saving that would freeze the line; the stored choice is the
@@ -188,6 +212,43 @@ test('a picked choice is saved as the plugin\'s own text, a typed line verbatim'
       '我自己打的一句話',
       'a typed line is the user\'s own words and is kept as sent',
     )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a picked fallback choice keeps provenance in history and later model context', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-choice-provenance-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  const systems: string[] = []
+  const requests: any[] = []
+  try {
+    const harness = makeHarness(dshHome, new Map<string, string>(), systems, requests)
+    const initial = await harness.post('view')
+    const sourceChoice = initial.choices.find((choice: any) => choice.text === '那就继续聊聊吧')
+    assert.ok(sourceChoice)
+
+    const switched = await harness.post('settings-set', { language: 'zh-TW' })
+    const displayed = switched.view.choices.find((choice: any) => choice.id === sourceChoice.id)
+    assert.equal(displayed.text, '那就繼續聊聊吧')
+
+    const answered = await harness.post('chat', { choiceId: sourceChoice.id, text: displayed.text })
+    const picked = answered.history.filter((line: any) => line.who === 'user').at(-1)
+    assert.equal(picked.text, '那就繼續聊聊吧')
+
+    await harness.post('chat', { text: '這是下一句' })
+    const dialogueRequests = requests.filter((request) => {
+      const system = String(request && request.system || '')
+      return !system.includes('情绪分类器') && !system.includes('对话选项生成器')
+    })
+    assert.equal(dialogueRequests.length, 2)
+    const laterContext = dialogueRequests[1].messages
+      .flatMap((message: any) => message.content || [])
+      .map((part: any) => part.text)
+    assert.ok(laterContext.includes('那就繼續聊聊吧'), JSON.stringify(laterContext))
+    assert.ok(!laterContext.includes('那就继续聊聊吧'), JSON.stringify(laterContext))
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
@@ -268,6 +329,231 @@ test('a line saved before segments existed keeps its text instead of breaking', 
 
     const restarted = makeHarness(dshHome)
     assert.equal(narratorOf(await restarted.post('view')), SWITCH_NOTICE)
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('the view carries the language, because not every surface reads settings', () => {
+  // The browser translates its own copy against a module-level locale. Only
+  // some surfaces fetch settings, so a cold open of the game or the pet used to
+  // render client copy in the default while server copy was already switched.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-lang-view-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  return (async () => {
+    try {
+      const harness = makeHarness(dshHome)
+      assert.equal((await harness.post('view')).language, 'auto')
+      await harness.post('settings-set', { language: 'zh-TW' })
+      assert.equal((await harness.post('view')).language, 'zh-TW')
+    } finally {
+      console.error = originalConsoleError
+      rmSync(dshHome, { recursive: true, force: true })
+    }
+  })()
+})
+
+test('a typed line that happens to be a source string is left alone', async () => {
+  // Source-string-as-key means a person can type a sentence the plugin also
+  // ships. Their own words must come back as they wrote them, while the choice
+  // beside them, which the plugin wrote, follows the language.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-typed-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(dshHome)
+    const entry = await harness.post('view')
+    const picked = entry.choices.find((choice: any) => choice.text === '那就继续聊聊吧')
+    assert.ok(picked, 'the fallback choice is the sentinel this test needs')
+
+    await harness.post('settings-set', { language: 'zh-TW' })
+    await harness.post('chat', { text: '那就继续聊聊吧' })
+
+    const view = await harness.post('view')
+    const typed = view.history.filter((line: any) => line.who === 'user').at(-1)
+    assert.equal(typed.text, '那就继续聊聊吧', 'a person\'s own words are not a translation key')
+    assert.ok(
+      view.choices.every((choice: any) => choice.text !== '那就继续聊聊吧'),
+      'plugin-written choices still follow the language: ' + JSON.stringify(view.choices.map((c: any) => c.text)),
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a profile edit or reset writes the greeting at its source, not translated', async () => {
+  // Both paths replace the opening line with the built-in greeting. Writing the
+  // translated form freezes it: the save would then hold Traditional and could
+  // never render back.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-profile-src-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  const storedGreeting = async () => {
+    const saved = JSON.parse(await nativeFs.readFile(globalSavePath(dshHome), 'utf8'))
+    const rows = (saved.state || saved).characters.deepseek.chatLines
+    return rows.find((row: any) => row.who === 'heroine')
+  }
+  try {
+    const harness = makeHarness(dshHome)
+    await harness.post('view')
+    await harness.post('settings-set', { language: 'zh-TW', characterMode: 'manual', characterId: 'deepseek' })
+    assert.equal(
+      (await harness.post('view')).history.find((line: any) => line.who === 'heroine').text,
+      '「主人，又見面啦～今天也想聽你說話喔。」',
+      'the served greeting follows the language',
+    )
+
+    // Edit a field that is not the greeting: the greeting row is rewritten too.
+    const edited = await harness.post('profile-set', {
+      characterId: 'deepseek',
+      overrides: { tone: '再溫柔一點' },
+    })
+    assert.equal(edited.ok, true, JSON.stringify(edited))
+    assert.deepEqual((await storedGreeting()).seg, [{ id: 'deepseek', ref: 'greeting' }])
+
+    const reset = await harness.post('profile-reset', { characterId: 'deepseek' })
+    assert.equal(reset.ok, true, JSON.stringify(reset))
+    assert.deepEqual((await storedGreeting()).seg, [{ id: 'deepseek', ref: 'greeting' }])
+
+    // And it still renders back once the language changes.
+    const back = await harness.post('settings-set', { language: 'zh-CN' })
+    assert.equal(
+      back.view.history.find((line: any) => line.who === 'heroine').text,
+      '「主人，又见面啦～今天也想听你说话呢。」',
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a segment naming a character this build does not have falls back to its text', async () => {
+  // Resolving an unknown id through the roster default would put another
+  // character's name into the notice that announced this one.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-seg-bad-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(dshHome)
+    await harness.post('view')
+    await harness.post('settings-set', { characterMode: 'manual', characterId: 'chatgpt' })
+
+    const global = globalSavePath(dshHome)
+    const saved = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const rows = (saved.state || saved).characters.chatgpt.chatLines
+    const index = rows.findIndex((row: any) => row.who === 'narrator')
+    rows[index] = {
+      who: 'narrator',
+      seg: ['（', { id: 'a-character-from-the-future', ref: 'displayName' }, ' 登场了。）'],
+      text: '（有人登场了。）',
+    }
+    await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
+
+    const restarted = makeHarness(dshHome)
+    assert.equal(narratorOf(await restarted.post('view')), '（有人登场了。）')
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a built-in CG error follows locale changes without rewriting provider errors', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-error-locale-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const files = new Map<string, string>()
+    const harness = makeHarness(dshHome, files)
+    await harness.post('view')
+    await harness.post('settings-set', { language: 'zh-TW' })
+
+    const global = globalSavePath(dshHome)
+    const saved = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const state = saved.state || saved
+    state.characters.deepseek.cgs.push({
+      id: 'cg-interrupted',
+      status: 'generating',
+      dataUrl: null,
+      prompt: null,
+      charId: 'deepseek',
+      level: 1,
+      at: 1,
+      seen: false,
+      savedAsBg: false,
+      error: null,
+    })
+    state.characters.deepseek.cgs.push({
+      id: 'cg-provider-error',
+      status: 'failed',
+      dataUrl: null,
+      prompt: null,
+      charId: 'deepseek',
+      level: 1,
+      at: 2,
+      seen: false,
+      savedAsBg: false,
+      // Exact collision with a plugin source: provider text is still verbatim.
+      error: '找不到这场小剧场的记录',
+    })
+    state.cg = { cgId: 'cg-interrupted' }
+    await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
+
+    const restarted = makeHarness(dshHome, files)
+    const interrupted = await restarted.post('view')
+    assert.equal(interrupted.cg.error, '生成被重啟打斷，請重新觸發')
+
+    const simplified = await restarted.post('settings-set', { language: 'zh-CN' })
+    assert.equal(simplified.view.cg.error, '生成被重启打断，请重新触发')
+
+    // Make the provider collision current and prove response-edge translation
+    // is gated by provenance rather than by source-string equality.
+    const afterRestart = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const afterRestartState = afterRestart.state || afterRestart
+    afterRestartState.cg = { cgId: 'cg-provider-error' }
+    await nativeFs.writeFile(global, JSON.stringify(afterRestart), 'utf8')
+    const providerRestart = makeHarness(dshHome, files)
+    const traditional = await providerRestart.post('settings-set', { language: 'zh-TW' })
+    assert.equal(traditional.view.cg.error, '找不到这场小剧场的记录')
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('an unsafe legacy CG prompt keeps its locale-independent replacement', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-prompt-source-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const files = new Map<string, string>()
+    const harness = makeHarness(dshHome, files)
+    await harness.post('view')
+    await harness.post('settings-set', { language: 'zh-TW' })
+
+    const global = globalSavePath(dshHome)
+    const saved = JSON.parse(await nativeFs.readFile(global, 'utf8'))
+    const state = saved.state || saved
+    state.characters.deepseek.cgs.push({
+      id: 'cg-unsafe-legacy',
+      status: 'ready',
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      prompt: '旧版提示，画面元素呼应对方最近的经历与工作：unsafe theme',
+      charId: 'deepseek',
+      level: 1,
+      at: 1,
+      seen: true,
+      savedAsBg: false,
+      error: null,
+    })
+    await nativeFs.writeFile(global, JSON.stringify(saved), 'utf8')
+
+    const restarted = makeHarness(dshHome, files)
+    const gallery = await restarted.post('cg-gallery')
+    const item = gallery.items.find((cg: any) => cg.id === 'cg-unsafe-legacy')
+    assert.equal(item.prompt, '旧版提示，温暖浪漫的日常氛围（旧版主题摘要已隐藏）')
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })

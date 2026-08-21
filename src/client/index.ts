@@ -1009,6 +1009,10 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     setViewState((previous: any) => {
       const base = previous && previous.key === cacheKey ? previous.value : cachedView(cacheKey)
       const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(base) : nextOrUpdater
+      // Every surface reads the view; only some of them read settings. Binding
+      // here is what keeps client copy in the same script as the server's,
+      // including on a cold open of the game or the pet.
+      if (next && typeof next === 'object' && typeof next.language === 'string') applyLanguage(next)
       rememberView(cacheKey, next)
       return { key: cacheKey, value: next }
     })
@@ -3282,7 +3286,15 @@ export function apply(ctx: any): void {
       hostLocale = snapshot && typeof snapshot.active === 'string' ? snapshot.active : undefined
     }
     readHostLocale()
-    if (typeof scoped.on === 'function') scoped.on('locale/change', readHostLocale)
+    if (typeof scoped.on === 'function') {
+      scoped.on('locale/change', () => {
+        readHostLocale()
+        // Only `auto` follows the host, and only a re-read says what it now
+        // resolves to. Mounted surfaces re-fetch on this event, which runs
+        // their view back through setS and rebinds the locale.
+        window.dispatchEvent(new CustomEvent('whg:settings-changed', { detail: {} }))
+      })
+    }
   })
 
   const style = document.createElement('style')
