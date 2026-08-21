@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../src/index.ts'
+import { modelPromptKind } from './model-prompt-kind.ts'
 
 /**
  * Drives the plugin over its own HTTP action surface, which is where a stored
@@ -65,8 +66,9 @@ function makeHarness(
         const system = String(options && options.system || '')
         systems.push(system)
         if (requests) requests.push(options)
-        if (system.includes('情绪分类器')) yield { type: 'text-delta', text: 'normal' }
-        else if (system.includes('对话选项生成器')) {
+        const kind = modelPromptKind(system)
+        if (kind === 'emotion-classifier') yield { type: 'text-delta', text: 'shy' }
+        else if (kind === 'choice-generator') {
           yield { type: 'text-delta', text: '{"positive":"陪你休息一下","neutral":"继续聊聊吧","negative":"我想先静静"}' }
         } else yield { type: 'text-delta', text: '主人今天也辛苦了呢。' }
       },
@@ -101,6 +103,46 @@ function narratorOf(view: any): string {
 
 function globalSavePath(dshHome: string): string {
   return join(dshHome, 'storages', 'dsh-whale-galgame', 'global.json')
+}
+
+/**
+ * Wait until the plugin has actually written its global save.
+ *
+ * A request returns before persistence lands — saving happens in scheduled
+ * maintenance — so reading the file straight after `view` is a race.
+ *
+ * @param home - the DSH home to watch.
+ * @returns the parsed save.
+ */
+async function waitForSave(home: string): Promise<any> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      return JSON.parse(await nativeFs.readFile(globalSavePath(home), 'utf8'))
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+  throw new Error('no global save appeared in ' + home)
+}
+
+/**
+ * Model a restart as a NEW home holding a COPY of the save, never as a second
+ * harness over the first one's directory.
+ *
+ * Nothing here can dispose a harness, so it keeps running scheduled
+ * maintenance after the last request it answered. Two harnesses over one
+ * directory therefore race to write global.json, and the earlier one can land
+ * a stale state on top of what the later one just persisted.
+ *
+ * @param from - the home whose save to copy.
+ * @param to - the home to write it into.
+ * @param edit - optional mutation applied to the state on the way across.
+ */
+async function forkSave(from: string, to: string, edit?: (state: any) => void): Promise<void> {
+  const saved = await waitForSave(from)
+  if (edit) edit(saved.state || saved)
+  await nativeFs.mkdir(join(to, 'storages', 'dsh-whale-galgame'), { recursive: true })
+  await nativeFs.writeFile(globalSavePath(to), JSON.stringify(saved), 'utf8')
 }
 
 async function storedNarrator(dshHome: string): Promise<any> {
@@ -245,10 +287,7 @@ test('a picked fallback choice keeps provenance in history and later model conte
     assert.equal(picked.text, '那就繼續聊聊吧')
 
     await harness.post('chat', { text: '這是下一句' })
-    const dialogueRequests = requests.filter((request) => {
-      const system = String(request && request.system || '')
-      return !system.includes('情绪分类器') && !system.includes('对话选项生成器')
-    })
+    const dialogueRequests = requests.filter((request) => modelPromptKind(request && request.system) === 'dialogue')
     assert.equal(dialogueRequests.length, 2)
     const laterContext = dialogueRequests[1].messages
       .flatMap((message: any) => message.content || [])
@@ -276,7 +315,7 @@ test('every prompt that writes dialogue states which script to write it in', asy
     const answered = await harness.post('chat', { choiceId: entry.choices[0].id, text: entry.choices[0].text })
     assert.notEqual(answered.fallbackUsed, true, 'the fixture model answered')
 
-    const writesDialogue = systems.filter((system) => !system.includes('情绪分类器'))
+    const writesDialogue = systems.filter((system) => modelPromptKind(system) !== 'emotion-classifier')
     assert.ok(writesDialogue.length >= 2, 'both the character and the choice generator ran')
     for (const system of writesDialogue) {
       assert.ok(
@@ -340,12 +379,40 @@ test('in zh-TW every dialogue prompt asks for Taiwanese Mandarin', async () => {
     const entry = await harness.post('view')
     await harness.post('chat', { choiceId: entry.choices[0].id, text: entry.choices[0].text })
 
-    const writesDialogue = systems.filter((system) => !system.includes('情緒分類器'))
+    const writesDialogue = systems.filter((system) => modelPromptKind(system) !== 'emotion-classifier')
     assert.ok(writesDialogue.length >= 2, 'both the character and the choice generator ran')
     for (const system of writesDialogue) {
       assert.ok(system.includes('輸出必須使用台灣繁體中文'), system.slice(0, 60))
       assert.ok(!system.includes('输出必须使用简体中文'), 'no Simplified demand survives: ' + system.slice(0, 60))
     }
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('zh-TW routes classifier and choice requests through their fixture answers', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-router-tw-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  const systems: string[] = []
+  try {
+    const harness = makeHarness(dshHome, new Map<string, string>(), systems)
+    await harness.post('settings-set', { language: 'zh-TW' })
+    const entry = await harness.post('view')
+    const answered = await harness.post('chat', { choiceId: entry.choices[0].id, text: entry.choices[0].text })
+    const picked = answered.history.filter((line: any) => line.who === 'user').at(-1)
+
+    assert.deepEqual(
+      {
+        emotion: picked.emotion,
+        choices: new Set(answered.choices.map((choice: any) => choice.text)),
+      },
+      {
+        emotion: 'shy',
+        choices: new Set(['陪你休息一下', '继续聊聊吧', '我想先静静']),
+      },
+    )
   } finally {
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
@@ -686,10 +753,15 @@ test('a CG prompt still parses as its own after a restart under zh-TW', async ()
   // on restart: the activity theme was stripped and replaced with the
   // hidden-legacy summary. The prompt is also the literal instruction the image
   // model received, so it has to be sent, stored and shown as one string.
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-trip-'))
+  // Each stage gets its own home and the save is forked forward; see forkSave.
+  const seedHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-seed-'))
+  const writeHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-write-'))
+  const restartHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-restart-'))
   const originalConsoleError = console.error
+  const originalConsoleWarn = console.warn
   const originalFetch = globalThis.fetch
   console.error = () => undefined
+  console.warn = () => undefined
   const requested: string[] = []
   globalThis.fetch = (async (_url: any, init: any) => {
     requested.push(JSON.parse(String(init.body)).input.messages[0].content[0].text)
@@ -710,28 +782,20 @@ test('a CG prompt still parses as its own after a restart under zh-TW', async ()
     chatHint: '主人刚才似乎又在排查棘手的代码问题。',
     cgHint: '画面用抽象的程序结构、调试光点与理顺的逻辑线呼应代码调试，不出现可读文字或真实代码',
   }
-  const savePath = globalSavePath(dshHome)
-  const readSave = async () => JSON.parse(await nativeFs.readFile(savePath, 'utf8'))
-  const cgOf = (saved: any) => {
-    const state = saved.state || saved
-    return (state.characters.deepseek.cgs || []).at(-1)
-  }
-
   try {
-    const first = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
-    await first.post('view')
-    await first.post('settings-set', { language: 'zh-TW' })
+    // Stage 1: let the plugin write one real save, then stop using this home.
+    const seeding = makeHarness(seedHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    await seeding.post('settings-set', { language: 'zh-TW' })
 
-    // An affection-seeded save: the next settlement tips the character over the
-    // level cap, which is what queues a CG.
-    const seeded = await readSave()
-    const state = seeded.state || seeded
-    state.activityFeed = [activity]
-    state.characters.deepseek.affection = 999
-    await nativeFs.writeFile(savePath, JSON.stringify(seeded), 'utf8')
-
-    const armed = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    // Stage 2: a copy with affection past the level cap and one activity, so
+    // the next settlement levels up and queues a CG with a theme in it.
+    await forkSave(seedHome, writeHome, (state) => {
+      state.activityFeed = [activity]
+      state.characters.deepseek.affection = 999
+    })
+    const armed = makeHarness(writeHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
     await armed.post('view')
+    await armed.post('settings-set', { language: 'zh-TW' })
     await armed.post('chat', { text: '今天也辛苦你了' })
     // Generation is fired off the request, so wait for the gallery to settle.
     let gallery: any = { items: [] }
@@ -749,13 +813,21 @@ test('a CG prompt still parses as its own after a restart under zh-TW', async ()
       assert.ok(sent.includes('程式除錯'), 'the theme itself is Traditional under zh-TW')
     }
 
-    const persisted = ((await readSave()).state || await readSave()).characters.deepseek.cgs
+    let persisted: any[] = []
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const saved = await waitForSave(writeHome)
+      persisted = ((saved.state || saved).characters.deepseek.cgs) || []
+      if (persisted.length > 0 && persisted.every((cg: any) => cg.status === 'ready')) break
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
     assert.ok(persisted.length > 0, 'the CG reached the save')
     for (const cg of persisted) assert.ok(requested.includes(cg.prompt), 'the save holds exactly what was sent')
 
-    // The restart is the part that used to lose the theme: sanitizeStoredCgPrompt
+    // Stage 3: a cold start over a copy of that save. This is where the
+    // translated prompt used to lose its theme, because sanitizeStoredCgPrompt
     // runs on load and rewrites anything it cannot recognise as its own.
-    const restarted = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    await forkSave(writeHome, restartHome)
+    const restarted = makeHarness(restartHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
     await restarted.post('view')
     const reloaded = await restarted.post('cg-gallery')
     assert.equal(reloaded.items.length, persisted.length, 'every CG came back')
@@ -767,6 +839,7 @@ test('a CG prompt still parses as its own after a restart under zh-TW', async ()
   } finally {
     globalThis.fetch = originalFetch
     console.error = originalConsoleError
-    rmSync(dshHome, { recursive: true, force: true })
+    console.warn = originalConsoleWarn
+    for (const home of [seedHome, writeHome, restartHome]) rmSync(home, { recursive: true, force: true })
   }
 })

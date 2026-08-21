@@ -6,8 +6,74 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../src/index.ts'
+import { modelPromptKind } from './model-prompt-kind.ts'
 
 type SharedDisk = Map<string, string>
+
+test('model prompt kinds match full production-shaped systems in both scripts', () => {
+  const cases = [
+    {
+      name: 'Simplified dialogue',
+      system: '你是「鲸鱼娘」——一只来自深海的鲸鱼娘，深海女仆工坊的看板娘，正在和自己的主人聊天。\n'
+        + '输出必须使用简体中文。\n'
+        + '不可覆盖规则（优先级最高）：你是纯情感陪伴角色；不执行任何任务，不写文件、不调用工具、不主动给工作建议；只扮演当前角色，不代演或切换到其他角色；每次只回复一句话（一屏一句），不超过40个字。',
+      expected: 'dialogue',
+    },
+    {
+      name: 'Traditional dialogue',
+      system: '你是「鯨魚娘」——一隻來自深海的鯨魚娘，深海女僕工坊的看板娘，正在和自己的主人聊天。\n'
+        + '輸出必須使用台灣繁體中文。\n'
+        + '不可覆蓋規則（優先順序最高）：你是純情感陪伴角色；不執行任何任務，不寫檔案、不呼叫工具、不主動給工作建議；只扮演當前角色，不代演或切換到其他角色；每次只回覆一句話（一屏一句），不超過40個字。',
+      expected: 'dialogue',
+    },
+    {
+      name: 'Simplified classifier',
+      system: '你是情绪分类器。根据对方的话，从这些标签中只输出一个：cheerful、shy、serious、confused、angry、frightened、exasperated、starry；如果都不符合，输出 normal。只输出标签本身，不要任何其他文字。',
+      expected: 'emotion-classifier',
+    },
+    {
+      name: 'Traditional classifier',
+      system: '你是情緒分類器。根據對方的話，從這些標籤中只輸出一個：cheerful、shy、serious、confused、angry、frightened、exasperated、starry；如果都不符合，輸出 normal。只輸出標籤本身，不要任何其他文字。',
+      expected: 'emotion-classifier',
+    },
+    {
+      name: 'Simplified choice generator',
+      system: '你是galgame对话选项生成器。只输出含 positive、neutral、negative 三个字符串字段的 JSON 对象；不得解释、不得使用 Markdown。输出必须使用简体中文。',
+      expected: 'choice-generator',
+    },
+    {
+      name: 'Traditional choice generator',
+      system: '你是galgame對話選項生成器。只輸出含 positive、neutral、negative 三個字串欄位的 JSON 物件；不得解釋、不得使用 Markdown。輸出必須使用台灣繁體中文。',
+      expected: 'choice-generator',
+    },
+    {
+      name: 'Simplified side-story writer',
+      system: '输出必须使用简体中文。\n你是「深海女仆工坊」的小剧场编剧。工坊里的女仆们是同事关系，不是任何真实公司的代言人。\n'
+        + '本场登场角色（只能用这些 id，不得出现其他角色）：\n- deepseek（鲸鱼娘）：温柔、元气\n严格只输出 JSON 对象，不要 Markdown、不要解释：',
+      expected: 'side-story-writer',
+    },
+    {
+      name: 'Traditional side-story writer',
+      system: '輸出必須使用台灣繁體中文。\n你是「深海女僕工坊」的小劇場編劇。工坊裡的女僕們是同事關係，不是任何真實公司的代言人。\n'
+        + '本場登場角色（只能用這些 id，不得出現其他角色）：\n- deepseek（鯨魚娘）：溫柔、元氣\n嚴格只輸出 JSON 物件，不要 Markdown、不要解釋：',
+      expected: 'side-story-writer',
+    },
+    {
+      name: 'Simplified overlapping continuation',
+      system: '输出必须使用简体中文。\n你是「深海女仆工坊」的小剧场编剧，正在续写结尾。\n'
+        + '本场登场角色（只能用这些 id）：\n- deepseek（鲸鱼娘）：温柔、元气\n严格只输出 JSON：{"effects":{"<id>":1},"reply":[]}',
+      expected: 'side-story-continuation',
+    },
+    {
+      name: 'Traditional overlapping continuation',
+      system: '輸出必須使用台灣繁體中文。\n你是「深海女僕工坊」的小劇場編劇，正在續寫結尾。\n'
+        + '本場登場角色（只能用這些 id）：\n- deepseek（鯨魚娘）：溫柔、元氣\n嚴格只輸出 JSON：{"effects":{"<id>":1},"reply":[]}',
+      expected: 'side-story-continuation',
+    },
+  ] as const
+
+  for (const row of cases) assert.equal(modelPromptKind(row.system), row.expected, row.name)
+})
 
 function workspaceFile(root: string): string {
   return root.replace(/[\\/]$/, '') + '\\.whale-girl-save.json'
@@ -97,6 +163,7 @@ function makeHarness(options: {
   root: string
   dshHome: string
   files: SharedDisk
+  systems?: string[]
   scene?: (cast: string[]) => any
   freeReply?: (cast: string[]) => any
   web?: { search: (req: any) => Promise<any> } | null
@@ -153,8 +220,9 @@ function makeHarness(options: {
       resolveModelInfo: async () => ({}),
       stream: async function* (opts: any): AsyncGenerator<any> {
         const system = String(opts && opts.system || '')
-        // The follow-up prompt also says 小剧场编剧, so it has to be matched first.
-        if (system.includes('正在续写结尾')) {
+        if (options.systems) options.systems.push(system)
+        const kind = modelPromptKind(system)
+        if (kind === 'side-story-continuation') {
           const cast = [...system.matchAll(/^- ([a-z]+)（/gm)].map((row) => row[1])
           const build = options.freeReply || ((ids: string[]) => ({
             effects: { [ids[0]]: 1 },
@@ -163,7 +231,7 @@ function makeHarness(options: {
           yield { type: 'text-delta', text: JSON.stringify(build(cast)) }
           return
         }
-        if (system.includes('小剧场编剧')) {
+        if (kind === 'side-story-writer') {
           // The server owns cast selection; recover it from the prompt the way a
           // real model would, so the fixture cannot drift from the real pick.
           const cast = [...system.matchAll(/^- ([a-z]+)（/gm)].map((row) => row[1])
@@ -171,7 +239,7 @@ function makeHarness(options: {
           yield { type: 'text-delta', text: JSON.stringify(build(cast)) }
           return
         }
-        yield { type: 'text-delta', text: system.includes('情绪分类器') ? 'normal' : '主人辛苦啦。' }
+        yield { type: 'text-delta', text: kind === 'emotion-classifier' ? 'normal' : '主人辛苦啦。' }
       },
     },
     inject: (names: string[], callback: Function) => {
@@ -232,6 +300,40 @@ async function playToChoices(post: Function, view: any): Promise<any> {
   }
   return current
 }
+
+test('zh-TW side-story start and continuation reach their distinct model routes', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-side-tw-routes-'))
+  const files: SharedDisk = new Map()
+  const systems: string[] = []
+  const originalRandom = Math.random
+  Math.random = () => 0
+  try {
+    const { post } = makeHarness({ root: 'E:\\workspace\\side-tw-routes', dshHome, files, systems })
+    const configured = await post('settings-set', { language: 'zh-TW', sideStorySeedSource: 'activity' })
+    assert.equal(configured.ok, true)
+    const entry = await post('view')
+
+    const started = await post('side-story', { op: 'start' })
+    assert.ok(started.sideStory.scene, 'the Traditional writer fixture produced a valid three-act scene')
+    const stopped = await playToChoices(post, started)
+    assert.equal(stopped.sideStory.scene.choices.length, 3)
+
+    const spoken = await post('side-story', { op: 'speak', text: '我請你吃小魚乾' })
+    assert.equal(spoken.affection, entry.affection + 1, 'the Traditional continuation fixture applied its effect')
+    assert.ok(
+      systems.some((system) => system.includes('你是「深海女僕工坊」的小劇場編劇。工坊裡的女僕們是同事關係')),
+      'the public start emitted the Traditional writer system',
+    )
+    assert.ok(
+      systems.some((system) => system.includes('你是「深海女僕工坊」的小劇場編劇，正在續寫結尾。')),
+      'the public speak emitted the Traditional continuation system',
+    )
+  } finally {
+    Math.random = originalRandom
+    await drain()
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
 
 test('gives the master more than one place to speak inside a single skit', async () => {
   const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-side-'))

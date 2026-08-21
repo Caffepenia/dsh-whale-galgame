@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../src/index.ts'
+import { modelPromptKind } from './model-prompt-kind.ts'
 
 function never(): Promise<never> {
   return new Promise(() => {})
@@ -58,9 +59,10 @@ function responsiveHarness(options: {
   }
   const stream = options.stream || (async function* (request: any): AsyncGenerator<any> {
     const system = String(request && request.system || '')
-    const text = system.includes('情绪分类器')
+    const kind = modelPromptKind(system)
+    const text = kind === 'emotion-classifier'
       ? 'normal'
-      : system.includes('对话选项生成器')
+      : kind === 'choice-generator'
         ? '{"positive":"靠近一点","neutral":"继续聊聊","negative":"先静一静"}'
         : '我在这里。'
     yield { type: 'text-delta', text }
@@ -150,9 +152,10 @@ test('a hanging model stream does not block settings or other short state mutati
       markStarted()
       await streamGate
       const system = String(request && request.system || '')
-      const text = system.includes('情绪分类器')
+      const kind = modelPromptKind(system)
+      const text = kind === 'emotion-classifier'
         ? 'normal'
-        : system.includes('对话选项生成器')
+        : kind === 'choice-generator'
           ? '{"positive":"靠近一点","neutral":"继续聊聊","negative":"先静一静"}'
           : '我在这里。'
       yield { type: 'text-delta', text }

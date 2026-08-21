@@ -170,22 +170,37 @@ test('no zh-TW string keeps a term that reads as Mainland usage in Taiwan', () =
   }
 })
 
-test('every source key appears in src/ exactly as a call site writes it', async () => {
+test('no source key is written in a form src/ never contains', async () => {
   // A source-string table has no compiler behind it: a key that no call site
   // can produce is never found, and the string silently stays Simplified.
-  // Keys are compared in their ESCAPED form, because that is the only way a
-  // mistake in escaping shows up — a key holding a backslash and an "n" is
+  // Keys are compared in their ESCAPED form, because that is the only way an
+  // escaping mistake shows up — a key holding a backslash and an "n" is
   // indistinguishable in the file from one holding a newline, yet only the
-  // latter is ever passed to t().
+  // latter is ever passed to t(). That is what this caught: 37 keys whose text
+  // looked perfectly correct.
+  //
+  // What it does NOT prove, deliberately stated rather than implied by the
+  // name: this is a substring match over file text, so it is a necessary
+  // condition and not a reachability proof. A key whose text appears only
+  // inside a longer literal, or only in a comment, passes; and a call site
+  // that builds the same runtime string by concatenation or through a \u
+  // escape would be reported here even though it works. Both directions are
+  // absent from src/ today. The lookups that matter for indirect data —
+  // roster fields, activity labels and hints — are asserted by behaviour in
+  // this file and in test/locale-switch.test.ts instead.
   const asWritten = (key: string) =>
     key.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r')
 
   const dir = join(import.meta.dirname, '..', 'src')
-  const files = (await readdir(dir, { recursive: true })).map(String).filter((f) => f.endsWith('.ts') && !f.includes('locales'))
+  // Only the locale tables themselves are skipped — a key must not count its
+  // own translation file as a call site. Anything else under src/ is scanned,
+  // including a future file whose name merely mentions locales.
+  const files = (await readdir(dir, { recursive: true })).map(String)
+    .filter((f) => f.endsWith('.ts') && !f.replace(/\\/g, '/').startsWith('locales/'))
   const sources = await Promise.all(files.map((f) => readFile(join(dir, f), 'utf8')))
 
-  const unreachable = Object.keys(zhTW).filter((key) => !sources.some((src) => src.includes(asWritten(key))))
-  assert.deepEqual(unreachable, [], 'these keys can never be looked up')
+  const missing = Object.keys(zhTW).filter((key) => !sources.some((src) => src.includes(asWritten(key))))
+  assert.deepEqual(missing, [], 'these keys occur nowhere in src/ and can never be looked up')
 })
 
 test('the activity prefix is looked up, not only the label inside it', async () => {

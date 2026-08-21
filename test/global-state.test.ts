@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import test, { after } from 'node:test'
 import { apply, createNativeGlobalStorage, createNativeWorkspaceStorage } from '../src/index.ts'
+import { modelPromptKind } from './model-prompt-kind.ts'
 
 const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 const PIXEL_ALT = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII='
@@ -211,9 +212,10 @@ function makeHarness(options: {
     resolveModelInfo: async () => ({}),
     stream: async function* (request: any): AsyncGenerator<any> {
       const system = String(request && request.system || '')
-      const text = system.includes('情绪分类器')
+      const kind = modelPromptKind(system)
+      const text = kind === 'emotion-classifier'
         ? 'normal'
-        : system.includes('对话选项生成器')
+        : kind === 'choice-generator'
           ? '{"positive":"靠近一点","neutral":"继续聊聊","negative":"先静一静"}'
           : '我在这里。'
       yield { type: 'text-delta', text }

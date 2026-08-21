@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { apply } from '../src/index.ts'
+import { modelPromptKind } from './model-prompt-kind.ts'
 
 test('binds the active workspace, counts Harness usage, and consumes a safe activity once', async () => {
   const root = 'E:\\workspace\\integration'
@@ -41,9 +42,10 @@ test('binds the active workspace, counts Harness usage, and consumes a safe acti
     resolveModelInfo: async () => ({}),
     stream: async function* (options: any): AsyncGenerator<any> {
       const system = String(options && options.system || '')
+      const kind = modelPromptKind(system)
       let text = '主人刚才又在理复杂的逻辑呢，不许熬夜哦。'
-      if (system.includes('情绪分类器')) text = 'normal'
-      else if (system.includes('对话选项生成器')) text = '{"positive":"陪你休息一下","neutral":"继续聊聊吧","negative":"我想先静静"}'
+      if (kind === 'emotion-classifier') text = 'normal'
+      else if (kind === 'choice-generator') text = '{"positive":"陪你休息一下","neutral":"继续聊聊吧","negative":"我想先静静"}'
       else {
         mainSystems.push(system)
         await new Promise((resolve) => setTimeout(resolve, 5))
@@ -374,11 +376,12 @@ test('stores safe role-local profile overrides and applies the effective profile
     resolveModelInfo: async () => ({}),
     stream: async function* (options: any): AsyncGenerator<any> {
       const system = String(options && options.system || '')
+      const kind = modelPromptKind(system)
       let text = '我会安静陪着你。'
-      if (system.includes('情绪分类器')) {
+      if (kind === 'emotion-classifier') {
         classificationPrompts.push(String(options.messages[0].content[0].text))
         text = 'normal'
-      } else if (system.includes('对话选项生成器')) {
+      } else if (kind === 'choice-generator') {
         choicePrompts.push(String(options.messages[0].content[0].text))
         text = '{"positive":"再靠近一点","neutral":"继续聊聊吧","negative":"我想静一静"}'
       }
