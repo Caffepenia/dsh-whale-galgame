@@ -99,6 +99,7 @@ function makeHarness(options: {
   files: SharedDisk
   scene?: (cast: string[]) => any
   freeReply?: (cast: string[]) => any
+  temperatureRefusal?: string
   web?: { search: (req: any) => Promise<any> } | null
   onSearch?: (req: any) => void
 }) {
@@ -110,6 +111,7 @@ function makeHarness(options: {
     events: debugEvents(now),
   }]
   const versions = new Map<string, number>()
+  const calls: { temperature: unknown; system: string }[] = []
   let routeHandler: any = null
 
   const services: any = {
@@ -153,6 +155,14 @@ function makeHarness(options: {
       resolveModelInfo: async () => ({}),
       stream: async function* (opts: any): AsyncGenerator<any> {
         const system = String(opts && opts.system || '')
+        calls.push({ temperature: opts.temperature, system })
+        if (opts.temperature !== undefined && options.temperatureRefusal) {
+          yield {
+            type: 'finish',
+            reason: { kind: 'error', failure: { message: options.temperatureRefusal } },
+          }
+          return
+        }
         // The follow-up prompt also says 小剧场编剧, so it has to be matched first.
         if (system.includes('正在续写结尾')) {
           const cast = [...system.matchAll(/^- ([a-z]+)（/gm)].map((row) => row[1])
@@ -217,7 +227,7 @@ function makeHarness(options: {
     return JSON.parse(body)
   }
 
-  return { post }
+  return { post, calls }
 }
 
 /** Advance until the master is asked to speak, or the scene runs out of beats. */
@@ -232,6 +242,46 @@ async function playToChoices(post: Function, view: any): Promise<any> {
   }
   return current
 }
+
+test('one unscoped side-story action cannot admit a model to the temperature cache', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-side-temperature-'))
+  const files: SharedDisk = new Map()
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness({
+      root: 'E:\\workspace\\side-temperature',
+      dshHome,
+      files,
+      temperatureRefusal: 'Parameter temperature is not supported for this model',
+      scene: () => ({ acts: [] }),
+    })
+    const entry = await harness.post('view')
+    const sideStory = await harness.post('side-story', { op: 'start' })
+    assert.equal(sideStory.sideStoryError, 'generation-failed', 'both invalid drafts were attempted')
+    assert.deepEqual(
+      harness.calls.filter((call) => call.system.includes('小剧场编剧')).map((call) => call.temperature),
+      [0.9, undefined, 0.9, undefined],
+      'the one action made two successful differential probes while rejecting both invalid drafts',
+    )
+
+    const beforeChat = harness.calls.length
+    await harness.post('chat', {
+      choiceId: entry.choices[0].id,
+      text: entry.choices[0].text,
+    })
+    const chatCalls = harness.calls.slice(beforeChat)
+    assert.ok(chatCalls.length > 0, 'the following chat really called the model')
+    assert.ok(
+      chatCalls.some((call) => call.temperature !== undefined),
+      'unscoped side-story probes cannot supply two independent cache confirmations',
+    )
+  } finally {
+    console.error = originalConsoleError
+    await drain()
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
 
 test('gives the master more than one place to speak inside a single skit', async () => {
   const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-side-'))

@@ -5,7 +5,24 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
+import { setFlagsFromString } from 'node:v8'
 import { apply } from '../src/index.ts'
+
+async function forceGarbageCollection(): Promise<void> {
+  const bun = (globalThis as any).Bun
+  const collect = bun && typeof bun.gc === 'function'
+    ? () => bun.gc(true)
+    : (() => {
+        setFlagsFromString('--expose_gc')
+        const exposed = runInNewContext('gc') as () => void
+        return () => exposed()
+      })()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    collect()
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
 
 /**
  * A provider that refuses `temperature` the way the Codex bridge does: the
@@ -14,8 +31,8 @@ import { apply } from '../src/index.ts'
  */
 function makeHarness(
   dshHome: string,
-  refusal = 'Codex error: Unsupported parameter: temperature',
-  retryRefusal?: string,
+  refusal: string | ((turn: number, options: any) => string | undefined) = 'Codex error: Unsupported parameter: temperature',
+  retryRefusal?: string | ((turn: number) => string | { message: string; kind: 'error' | 'aborted' } | undefined),
 ) {
   const root = 'E:\\workspace\\temperature'
   const files = new Map<string, string>()
@@ -25,7 +42,9 @@ function makeHarness(
     persisted: true,
     events: [],
   }]
-  const calls: { temperature: unknown }[] = []
+  const calls: { temperature: unknown; system: string; turn: number; model: string }[] = []
+  const scopeRefs: WeakRef<AbortSignal>[] = []
+  let chatTurn = 0
   let routeHandler: any = null
   const services: any = {
     fs: {
@@ -62,13 +81,28 @@ function makeHarness(
       listModels: async () => [{ id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', inputModalities: ['text'] }],
       resolveModelInfo: async () => ({}),
       stream: async function* (options: any): AsyncGenerator<any> {
-        calls.push({ temperature: options.temperature })
-        if (options.temperature !== undefined || retryRefusal !== undefined) {
+        calls.push({
+          temperature: options.temperature,
+          system: String(options.system || ''),
+          turn: chatTurn,
+          model: String(options.model || ''),
+        })
+        scopeRefs.push(new WeakRef(options.signal))
+        const retryFailureValue = options.temperature === undefined
+          ? (typeof retryRefusal === 'function' ? retryRefusal(chatTurn) : retryRefusal)
+          : undefined
+        const retryFailure = typeof retryFailureValue === 'string'
+          ? { message: retryFailureValue, kind: 'error' as const }
+          : retryFailureValue
+        const originalRefusal = options.temperature !== undefined
+          ? (typeof refusal === 'function' ? refusal(chatTurn, options) : refusal)
+          : undefined
+        if (originalRefusal !== undefined || retryFailure !== undefined) {
           yield {
             type: 'finish',
             reason: {
-              kind: 'error',
-              failure: { message: options.temperature !== undefined ? refusal : retryRefusal },
+              kind: originalRefusal !== undefined ? 'error' : retryFailure!.kind,
+              failure: { message: originalRefusal ?? retryFailure!.message },
             },
           }
           return
@@ -90,6 +124,7 @@ function makeHarness(
   apply(ctx, { chatProvider: 'codex', chatModel: 'gpt-5.6-sol' }, { nativeGlobalIo: nativeFs })
 
   async function post(action: string, args: any = {}): Promise<any> {
+    if (action === 'chat') chatTurn += 1
     const req: any = Readable.from([JSON.stringify({ action, args: { ...args, sessionId: 'temperature-session' } })])
     req.method = 'POST'
     let status = 0
@@ -99,7 +134,14 @@ function makeHarness(
     return JSON.parse(body)
   }
 
-  return { post, calls }
+  return { post, calls, scopeRefs }
+}
+
+async function selectHarnessModel(harness: ReturnType<typeof makeHarness>, model: string): Promise<void> {
+  const result = await harness.post('settings-set', {
+    chatSelection: { provider: 'codex', model },
+  })
+  assert.equal(result.ok, true, JSON.stringify(result.errors || []))
 }
 
 test('a model that refuses temperature still answers, and stops being asked twice', async () => {
@@ -166,6 +208,313 @@ test('a failed retry does not cache the canonical temperature refusal', async ()
     )
   } finally {
     console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('settled failed retries do not retain their request signals', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-signal-retention-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(
+      dshHome,
+      'Parameter temperature is not supported for this model',
+      'Unsupported parameter: top_p',
+    )
+    let response = await harness.post('view')
+    for (let model = 0; model < 5; model++) {
+      await selectHarnessModel(harness, `retention-probe-${model}`)
+      response = await harness.post('chat', {
+        choiceId: response.choices[0].id,
+        text: response.choices[0].text,
+      })
+      assert.equal(response.fallbackUsed, true, 'the retry must fail so confidence resets')
+    }
+
+    const settledScopes = harness.scopeRefs.slice()
+    assert.ok(settledScopes.length > 0, 'the provider observed request signals')
+    await forceGarbageCollection()
+    const retained = settledScopes.filter((reference) => reference.deref() !== undefined).length
+    assert.equal(retained, 0, 'completed reset records must not pin any request AbortSignal')
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('partial temperature confidence evicts old model keys', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-partial-bound-'))
+  try {
+    const harness = makeHarness(dshHome, 'Parameter temperature is not supported for this model')
+    let response = await harness.post('view')
+    const chat = async () => {
+      response = await harness.post('chat', {
+        choiceId: response.choices[0].id,
+        text: response.choices[0].text,
+      })
+    }
+
+    for (let model = 0; model < 33; model++) {
+      await selectHarnessModel(harness, `partial-bound-${model}`)
+      await chat()
+    }
+
+    await selectHarnessModel(harness, 'partial-bound-0')
+    await chat()
+    const beforeSecondRevisit = harness.calls.length
+    await chat()
+    assert.ok(
+      harness.calls.slice(beforeSecondRevisit).some((call) => call.temperature !== undefined),
+      'the oldest partial record was evicted instead of combining evidence across an unbounded model history',
+    )
+  } finally {
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('admitted temperature cache entries evict old model keys', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-admitted-bound-'))
+  try {
+    const harness = makeHarness(dshHome, 'Parameter temperature is not supported for this model')
+    let response = await harness.post('view')
+    const chat = async () => {
+      response = await harness.post('chat', {
+        choiceId: response.choices[0].id,
+        text: response.choices[0].text,
+      })
+    }
+
+    for (let model = 0; model < 33; model++) {
+      await selectHarnessModel(harness, `admitted-bound-${model}`)
+      await chat()
+      await chat()
+    }
+
+    await selectHarnessModel(harness, 'admitted-bound-0')
+    const beforeRevisit = harness.calls.length
+    await chat()
+    assert.ok(
+      harness.calls.slice(beforeRevisit).some((call) => call.temperature !== undefined),
+      'the oldest admitted record was evicted instead of growing the session memo without bound',
+    )
+  } finally {
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('two successful non-canonical confirmations admit the model to the cache', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-confidence-'))
+  try {
+    const harness = makeHarness(dshHome, 'Parameter temperature is not supported for this model')
+    const entry = await harness.post('view')
+    const first = await harness.post('chat', {
+      choiceId: entry.choices[0].id,
+      text: entry.choices[0].text,
+    })
+
+    const beforeSecondTurn = harness.calls.length
+    const second = await harness.post('chat', {
+      choiceId: first.choices[0].id,
+      text: first.choices[0].text,
+    })
+    assert.ok(
+      harness.calls.slice(beforeSecondTurn).some((call) => call.temperature !== undefined),
+      'one request-scoped confirmation is not enough to omit temperature',
+    )
+
+    const beforeThirdTurn = harness.calls.length
+    await harness.post('chat', {
+      choiceId: second.choices[0].id,
+      text: second.choices[0].text,
+    })
+    const thirdCalls = harness.calls.slice(beforeThirdTurn)
+    assert.ok(thirdCalls.length > 0, 'the third turn really called the model')
+    assert.ok(
+      thirdCalls.every((call) => call.temperature === undefined),
+      'two independent confirmations admit the provider/model to the cache',
+    )
+  } finally {
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+for (const interrupted of ['failed', 'aborted'] as const) {
+  test(`${interrupted === 'aborted' ? 'an' : 'a'} ${interrupted} retry resets non-canonical cache confidence`, async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), `dsh-whale-temperature-${interrupted}-confidence-`))
+    const originalConsoleError = console.error
+    console.error = () => undefined
+    try {
+      const harness = makeHarness(
+        dshHome,
+        'Parameter temperature is not supported for this model',
+        (turn) => turn === 2
+          ? interrupted === 'aborted'
+            ? { message: 'provider aborted the retry', kind: 'aborted' }
+            : 'Unsupported parameter: top_p'
+          : undefined,
+      )
+      let response = await harness.post('view')
+      const chat = async () => {
+        response = await harness.post('chat', {
+          choiceId: response.choices[0].id,
+          text: response.choices[0].text,
+        })
+        return response
+      }
+
+      await chat()
+      const interruptedTurn = await chat()
+      assert.equal(interruptedTurn.fallbackUsed, true, `the ${interrupted} retry really interrupted confirmation`)
+      await chat()
+
+      const beforeFourthTurn = harness.calls.length
+      await chat()
+      const fourthCalls = harness.calls.slice(beforeFourthTurn)
+      assert.ok(
+        fourthCalls.some((call) => call.temperature !== undefined),
+        `confidence before the ${interrupted} retry was discarded rather than combined with later evidence`,
+      )
+
+      const beforeFifthTurn = harness.calls.length
+      await chat()
+      const fifthCalls = harness.calls.slice(beforeFifthTurn)
+      assert.ok(fifthCalls.length > 0, 'the fifth turn really called the model')
+      assert.ok(
+        fifthCalls.every((call) => call.temperature === undefined),
+        'two confirmations after the interruption eventually admit the model',
+      )
+    } finally {
+      console.error = originalConsoleError
+      rmSync(dshHome, { recursive: true, force: true })
+    }
+  })
+}
+
+test('a real maxTokens refusal retries broadly but falls back without caching', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-max-tokens-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const refusal = 'Unsupported parameter: maxTokens; request included temperature=0.9'
+    const harness = makeHarness(dshHome, refusal, 'Unsupported parameter: maxTokens')
+    const entry = await harness.post('view')
+    const mainCalls = (from: number) => harness.calls.slice(from).filter((call) => {
+      return !call.system.includes('情绪分类器') && !call.system.includes('对话选项生成器')
+    })
+
+    const beforeFirstTurn = harness.calls.length
+    const first = await harness.post('chat', {
+      choiceId: entry.choices[0].id,
+      text: entry.choices[0].text,
+    })
+    assert.equal(first.fallbackUsed, true, 'removing temperature cannot fix the real maxTokens refusal')
+    assert.deepEqual(
+      mainCalls(beforeFirstTurn).map((call) => call.temperature),
+      [0.9, undefined],
+      'the broad policy makes exactly one temperature-free retry before falling back',
+    )
+
+    const beforeSecondTurn = harness.calls.length
+    const second = await harness.post('chat', {
+      choiceId: first.choices[0].id,
+      text: first.choices[0].text,
+    })
+    assert.equal(second.fallbackUsed, true)
+    assert.deepEqual(
+      mainCalls(beforeSecondTurn).map((call) => call.temperature),
+      [0.9, undefined],
+      'the failed retry did not cache temperature as unsupported',
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a successful request with temperature resets behavioral confidence', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-supported-reset-'))
+  try {
+    const refusal = 'Parameter temperature is not supported for this model'
+    const harness = makeHarness(dshHome, (turn) => turn === 2 ? undefined : refusal)
+    let response = await harness.post('view')
+    const chat = async () => {
+      response = await harness.post('chat', {
+        choiceId: response.choices[0].id,
+        text: response.choices[0].text,
+      })
+    }
+
+    await chat()
+    await chat()
+    await chat()
+
+    const beforeFourthTurn = harness.calls.length
+    await chat()
+    assert.ok(
+      harness.calls.slice(beforeFourthTurn).some((call) => call.temperature !== undefined),
+      'a successful temperature request broke the earlier confirmation sequence',
+    )
+
+    const beforeFifthTurn = harness.calls.length
+    await chat()
+    const fifthCalls = harness.calls.slice(beforeFifthTurn)
+    assert.ok(fifthCalls.length > 0, 'the fifth turn really called the model')
+    assert.ok(
+      fifthCalls.every((call) => call.temperature === undefined),
+      'two fresh confirmations after the successful request eventually admit the model',
+    )
+  } finally {
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a successful temperature call overrides concurrent refusal evidence in the same scope', async () => {
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-temperature-mixed-scope-'))
+  try {
+    const refusal = 'Parameter temperature is not supported for this model'
+    const harness = makeHarness(dshHome, (turn, options) => {
+      const system = String(options.system || '')
+      return turn === 2 && system.includes('情绪分类器') ? undefined : refusal
+    })
+    let response = await harness.post('view')
+    const chat = async () => {
+      response = await harness.post('chat', {
+        choiceId: response.choices[0].id,
+        text: response.choices[0].text,
+      })
+    }
+
+    await chat()
+    const beforeMixedTurn = harness.calls.length
+    await chat()
+    const mixedCalls = harness.calls.slice(beforeMixedTurn)
+    assert.ok(
+      mixedCalls.some((call) => call.system.includes('情绪分类器') && call.temperature !== undefined),
+      'one temperature-bearing call succeeded in the mixed action',
+    )
+    assert.ok(
+      mixedCalls.some((call) => !call.system.includes('情绪分类器') && call.temperature === undefined),
+      'another call in the same action refused temperature and retried successfully',
+    )
+
+    await chat()
+    const beforeFourthTurn = harness.calls.length
+    await chat()
+    assert.ok(
+      harness.calls.slice(beforeFourthTurn).some((call) => call.temperature !== undefined),
+      'same-scope contradictory evidence resets confidence instead of admitting the model',
+    )
+
+    const beforeFifthTurn = harness.calls.length
+    await chat()
+    const fifthCalls = harness.calls.slice(beforeFifthTurn)
+    assert.ok(fifthCalls.length > 0, 'the fifth turn really called the model')
+    assert.ok(
+      fifthCalls.every((call) => call.temperature === undefined),
+      'two later clean refusal scopes can still admit the model',
+    )
+  } finally {
     rmSync(dshHome, { recursive: true, force: true })
   }
 })

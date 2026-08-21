@@ -2725,8 +2725,12 @@ export function apply(
     })
   }
 
-  /** Models confirmed by a successful retry of the canonical Codex refusal. */
-  const samplingUnsupported = new Set<string>()
+  /** Bounded per-apply model knowledge; weak scope keys never own request graphs. */
+  const samplingUnsupported = new Map<string, true>()
+  const samplingConfidence = new Map<string, number>()
+  const samplingScopeOutcomes = new WeakMap<AbortSignal, Map<string, 'confirmed' | 'reset'>>()
+  const SAMPLING_CONFIRMATIONS_REQUIRED = 2
+  const SAMPLING_STATE_MAX_KEYS = 32
 
   /**
    * Retry and cache deliberately accept different errors. A retry only costs
@@ -2734,9 +2738,14 @@ export function apply(
    * `temperature` identifier gets one attempt without it; grammatical scope,
    * quoted echoes and negation are intentionally ignored. A bad cache entry
    * would silently alter the whole session, so prose is never generalized for
-   * caching: only the exact observed Codex bridge refusal is admitted, and
-   * only after its retry succeeds. Other languages fall through until an
-   * observed provider wording or structured parameter field reaches this API.
+   * caching. The exact observed Codex bridge refusal is admitted after one
+   * successful retry; other wording needs two successful differential probes
+   * from distinct correlated request scopes. Unscoped retries cannot provide
+   * that evidence. A failed/aborted retry or a successful call with temperature
+   * wins over confirmations from the same scope and resets partial confidence.
+   * Both per-model memos evict old keys, and this memo references request signals
+   * only as weak keys. Other languages fall through until an observed provider
+   * wording reaches this API.
    */
   function shouldRetryWithoutTemperature(message: string): boolean {
     const namesTemperature = /(?:^|[^A-Za-z0-9_-])temperature(?=$|[^A-Za-z0-9_-])/i.test(message)
@@ -2746,6 +2755,50 @@ export function apply(
 
   function isCanonicalTemperatureRefusal(message: string): boolean {
     return /^model stream failed:\s*Codex error:\s*Unsupported parameter:\s*temperature\s*$/i.test(message.trim())
+  }
+
+  function setBoundedSamplingState<T>(map: Map<string, T>, key: string, value: T): void {
+    map.delete(key)
+    map.set(key, value)
+    while (map.size > SAMPLING_STATE_MAX_KEYS) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
+  }
+
+  function scopeOutcomes(scope: AbortSignal): Map<string, 'confirmed' | 'reset'> {
+    let outcomes = samplingScopeOutcomes.get(scope)
+    if (!outcomes) {
+      outcomes = new Map()
+      samplingScopeOutcomes.set(scope, outcomes)
+    }
+    return outcomes
+  }
+
+  function admitSamplingUnsupported(key: string, scope?: AbortSignal): void {
+    if (scope && scopeOutcomes(scope).get(key) === 'reset') return
+    samplingConfidence.delete(key)
+    setBoundedSamplingState(samplingUnsupported, key, true)
+  }
+
+  function confirmSamplingUnsupported(key: string, scope?: AbortSignal): void {
+    if (samplingUnsupported.has(key) || !scope) return
+    const outcomes = scopeOutcomes(scope)
+    if (outcomes.has(key)) return
+    outcomes.set(key, 'confirmed')
+    const confirmations = (samplingConfidence.get(key) || 0) + 1
+    if (confirmations >= SAMPLING_CONFIRMATIONS_REQUIRED) {
+      admitSamplingUnsupported(key, scope)
+      return
+    }
+    setBoundedSamplingState(samplingConfidence, key, confirmations)
+  }
+
+  function resetSamplingConfidence(key: string, scope?: AbortSignal): void {
+    samplingConfidence.delete(key)
+    samplingUnsupported.delete(key)
+    if (scope) scopeOutcomes(scope).set(key, 'reset')
   }
 
   /**
@@ -2762,16 +2815,31 @@ export function apply(
     }
     if (samplingUnsupported.has(key)) return streamOnce(withoutTemperature(), externalSignal)
     try {
-      return await streamOnce(options, externalSignal)
+      const text = await streamOnce(options, externalSignal)
+      resetSamplingConfidence(key, externalSignal)
+      return text
     } catch (err) {
       if (options.temperature === undefined) throw err
       const message = err instanceof Error ? err.message : String(err)
       if (!shouldRetryWithoutTemperature(message)) throw err
       // The refusal may have raced a caller deadline. Retrying past an abort
       // would start a second provider request after cancellation.
-      if (externalSignal && externalSignal.aborted) throw abortFailure(externalSignal, 'model stream aborted')
-      const retried = await streamOnce(withoutTemperature(), externalSignal)
-      if (isCanonicalTemperatureRefusal(message)) samplingUnsupported.add(key)
+      if (externalSignal && externalSignal.aborted) {
+        resetSamplingConfidence(key, externalSignal)
+        throw abortFailure(externalSignal, 'model stream aborted')
+      }
+      let retried: string
+      try {
+        retried = await streamOnce(withoutTemperature(), externalSignal)
+      } catch (retryError) {
+        resetSamplingConfidence(key, externalSignal)
+        throw retryError
+      }
+      if (isCanonicalTemperatureRefusal(message)) {
+        admitSamplingUnsupported(key, externalSignal)
+      } else {
+        confirmSamplingUnsupported(key, externalSignal)
+      }
       return retried
     }
   }
