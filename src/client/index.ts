@@ -9,6 +9,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { WHALE_ART } from './art.generated'
+import { EMOTION_ART, emotionOf, moodOf } from './dialogue-classifiers'
 
 const CSS = [
   // ── pet ────────────────────────────────────────────────────────────────
@@ -1831,53 +1832,6 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
     act('chat', { text: t })
   }
 
-  // whale-girl emotion sprites: filename = emotion (local asset keys)
-  const EMOTION_ART: Record<string, string> = {
-    cheerful: 'whale-cheerful',
-    shy: 'whale-shy',
-    serious: 'whale-serious',
-    confused: 'whale-confused',
-    angry: 'whale-angry',
-    frightened: 'whale-frightened',
-    exasperated: 'whale-exasperated',
-    starry: 'whale-starry',
-  }
-
-  // detect the emotion: prefer the host's LLM classification, fall back to keywords
-  function emotionOf(): string {
-    const lines: any[] = (s && s.history) || []
-    let lastLine: any = null
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i].who === 'user') { lastLine = lines[i]; break }
-    }
-    if (!lastLine) return 'normal'
-    if (lastLine.emotion && EMOTION_ART[lastLine.emotion]) return lastLine.emotion
-    const last: string = lastLine.text || ''
-    if (!last) return 'normal'
-    if (/生气|讨厌|哼|烦|滚|过分|笨蛋|气死|可恶|生氣|討厭|煩|滾|過分|氣死|可惡/.test(last)) return 'angry'
-    if (/害怕|吓|恐怖|鬼|啊啊|惊|别吓我|嚇|驚|別嚇我/.test(last)) return 'frightened'
-    if (/无奈|累死|唉|好吧|算了|服了|无语|头疼|無奈|無語|頭疼/.test(last)) return 'exasperated'
-    if (/星星|好美|浪漫|月亮|梦想|憧憬|心动|闪闪|漂亮|夢想|心動|閃閃/.test(last)) return 'starry'
-    if (/害羞|呜|脸红|别这样|不好意思|才不|嗚|臉紅|別這樣/.test(last)) return 'shy'
-    if (/？|\?|什么|不懂|困惑|为啥|咦|不明白|没听懂|什麼|為啥|沒聽懂/.test(last)) return 'confused'
-    if (/认真|工作|学习|讨论|问题|严肃|报告|项目|方案|認真|學習|討論|問題|嚴肅|報告|項目/.test(last)) return 'serious'
-    if (/开心|高兴|哈哈|太好了|棒|喜欢|爱|♪|≧▽≦|耶|抱抱|亲亲|開心|高興|喜歡|愛|親親/.test(last)) return 'cheerful'
-    return 'normal'
-  }
-
-  function moodOf(): string {
-    const lines: any[] = (s && s.history) || []
-    let last: string | null = null
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i].who === 'heroine') { last = lines[i].text; break }
-    }
-    if (!last) return 'normal'
-    if (/生气|讨厌|哼|笨蛋|不理|走开|过分|烦|生氣|討厭|走開|過分|煩/.test(last)) return 'angry'
-    if (/喜欢|♪|开心|太棒|幸福|≧▽≦|哈哈|啦～|喜歡|開心/.test(last)) return 'happy'
-    if (/害羞|才不|呜|脸红|别这样|……|嗚|臉紅|別這樣/.test(last)) return 'shy'
-    return 'normal'
-  }
-
   function lastLine(): any {
     const lines: any[] = (s && s.history) || []
     return lines.length > 0 ? lines[lines.length - 1] : null
@@ -2891,8 +2845,9 @@ function App(props: { useSessions: any; variant?: string; sessionId?: string }):
   function stage(): React.ReactElement {
     const activeScene = sideStoryScene()
     if (activeScene) return castStage(activeScene)
-    const emotion = emotionOf()
-    const mood = moodOf()
+    const history = (s && s.history) || []
+    const emotion = emotionOf(history)
+    const mood = moodOf(history)
     let src: string | undefined
     let useFilter = !s.moodSprites
     let emoKey = ''

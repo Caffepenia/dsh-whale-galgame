@@ -3,13 +3,14 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const source = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8')
+const classifierSource = readFileSync(new URL('../src/client/dialogue-classifiers.ts', import.meta.url), 'utf8')
 
-function section(start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from + start.length)
+function section(start: string, end: string, body = source): string {
+  const from = body.indexOf(start)
+  const to = body.indexOf(end, from + start.length)
   assert.notEqual(from, -1, 'missing client section: ' + start)
   assert.notEqual(to, -1, 'missing client section boundary: ' + end)
-  return source.slice(from, to)
+  return body.slice(from, to)
 }
 
 function classifierAlternatives(body: string, result: string): string[] {
@@ -58,7 +59,7 @@ test('available reply choices are not hidden by the latest line author', () => {
 })
 
 test('user emotion fallback literals include their Traditional twins', () => {
-  const emotion = section('function emotionOf()', 'function moodOf()')
+  const emotion = section('export function emotionOf(', 'export function moodOf(', classifierSource)
   assertTwinPairs(classifierAlternatives(emotion, 'angry'), [
     ['生气', '生氣'], ['讨厌', '討厭'], ['烦', '煩'], ['滚', '滾'],
     ['过分', '過分'], ['气死', '氣死'], ['可恶', '可惡'],
@@ -88,7 +89,7 @@ test('user emotion fallback literals include their Traditional twins', () => {
 })
 
 test('model mood fallback literals include their Traditional twins', () => {
-  const mood = section('function moodOf()', 'function lastLine()')
+  const mood = section('export function moodOf(', 'function lastLine(', classifierSource)
   assertTwinPairs(classifierAlternatives(mood, 'angry'), [
     ['生气', '生氣'], ['讨厌', '討厭'], ['走开', '走開'], ['过分', '過分'], ['烦', '煩'],
   ])
