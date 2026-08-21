@@ -11,7 +11,13 @@ import { apply } from '../src/index.ts'
  * Drives the plugin over its own HTTP action surface, which is where a stored
  * line is turned into something the browser renders.
  */
-function makeHarness(dshHome: string, files = new Map<string, string>(), systems?: string[], requests?: any[]) {
+function makeHarness(
+  dshHome: string,
+  files = new Map<string, string>(),
+  systems?: string[],
+  requests?: any[],
+  config: any = {},
+) {
   const root = 'E:\\workspace\\locale-switch'
   const sessions = [{
     header: { version: 0, id: 'locale-session', cwd: root, createdAt: 1_000 },
@@ -72,7 +78,7 @@ function makeHarness(dshHome: string, files = new Map<string, string>(), systems
     on: () => undefined,
     effect: (callback: Function) => callback(),
   }
-  apply(ctx, { chatProvider: 'deepseek-official', chatModel: 'deepseek-v4-flash' }, { nativeGlobalIo: nativeFs })
+  apply(ctx, { chatProvider: 'deepseek-official', chatModel: 'deepseek-v4-flash', ...config }, { nativeGlobalIo: nativeFs })
 
   async function post(action: string, args: any = {}): Promise<any> {
     const req: any = Readable.from([JSON.stringify({ action, args: { ...args, sessionId: 'locale-session' } })])
@@ -277,6 +283,68 @@ test('every prompt that writes dialogue states which script to write it in', asy
         system.includes('输出必须使用简体中文。'),
         'prompt does not say which script to answer in: ' + system.slice(0, 60),
       )
+    }
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('lines written in zh-CN read as Traditional once zh-TW is chosen', async () => {
+  // The point of keeping sources in the save: these lines were written before
+  // the language was chosen, and still have to follow it.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-locale-tw-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const harness = makeHarness(dshHome)
+    await harness.post('view')
+    const switched = await harness.post('settings-set', { characterMode: 'manual', characterId: 'chatgpt' })
+    assert.equal(narratorOf(switched.view), SWITCH_NOTICE)
+
+    const view = (await harness.post('settings-set', { language: 'zh-TW' })).view
+    assert.equal(narratorOf(view), '（你把角色來源切換為 小吉，小吉 登場了。）')
+    assert.equal(
+      view.history.find((line: any) => line.who === 'heroine').text,
+      '「嗨，我把頻道都整理好啦。現在只想聽聽你心裡那一條線。」',
+    )
+    assert.deepEqual(
+      view.choices.map((choice: any) => choice.text).sort(),
+      ['先讓我安靜一下', '想再靠近你一點', '那就繼續聊聊吧'],
+    )
+
+    // And back, because a save must not drift into the other script either.
+    const back = (await harness.post('settings-set', { language: 'zh-CN' })).view
+    assert.equal(narratorOf(back), SWITCH_NOTICE)
+    assert.equal(
+      back.history.find((line: any) => line.who === 'heroine').text,
+      '「嗨，我把频道都理顺啦。现在只想听听你心里那一条线。」',
+    )
+  } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('in zh-TW every dialogue prompt asks for Taiwanese Mandarin', async () => {
+  // The reply buttons are generated, not translated, so the only thing that
+  // decides their script is what the prompt asks for. This is the assertion
+  // that the table actually reaches that prompt.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-script-tw-'))
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  const systems: string[] = []
+  try {
+    const harness = makeHarness(dshHome, new Map<string, string>(), systems)
+    await harness.post('settings-set', { language: 'zh-TW' })
+    const entry = await harness.post('view')
+    await harness.post('chat', { choiceId: entry.choices[0].id, text: entry.choices[0].text })
+
+    const writesDialogue = systems.filter((system) => !system.includes('情緒分類器'))
+    assert.ok(writesDialogue.length >= 2, 'both the character and the choice generator ran')
+    for (const system of writesDialogue) {
+      assert.ok(system.includes('輸出必須使用台灣繁體中文'), system.slice(0, 60))
+      assert.ok(!system.includes('输出必须使用简体中文'), 'no Simplified demand survives: ' + system.slice(0, 60))
     }
   } finally {
     console.error = originalConsoleError
@@ -605,6 +673,99 @@ test('an unsafe legacy CG prompt keeps its locale-independent replacement', asyn
     const item = gallery.items.find((cg: any) => cg.id === 'cg-unsafe-legacy')
     assert.equal(item.prompt, '旧版提示，温暖浪漫的日常氛围（旧版主题摘要已隐藏）')
   } finally {
+    console.error = originalConsoleError
+    rmSync(dshHome, { recursive: true, force: true })
+  }
+})
+
+test('a CG prompt still parses as its own after a restart under zh-TW', async () => {
+  // Regression, and a data-loss one. The prompt is persisted and then re-parsed
+  // on the next load by sanitizeStoredCgPrompt, whose markers are Simplified
+  // because saves written by earlier versions already contain them. Translating
+  // the prompt made a freshly written, perfectly safe prompt fail its own check
+  // on restart: the activity theme was stripped and replaced with the
+  // hidden-legacy summary. The prompt is also the literal instruction the image
+  // model received, so it has to be sent, stored and shown as one string.
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-whale-cg-trip-'))
+  const originalConsoleError = console.error
+  const originalFetch = globalThis.fetch
+  console.error = () => undefined
+  const requested: string[] = []
+  globalThis.fetch = (async (_url: any, init: any) => {
+    requested.push(JSON.parse(String(init.body)).input.messages[0].content[0].text)
+    return {
+      ok: true,
+      json: async () => ({
+        output: { choices: [{ message: { content: [{ image: 'data:image/png;base64,iVBORw0KGgo=' }] } }] },
+      }),
+    }
+  }) as any
+
+  const activity = {
+    fingerprint: 'activity-cgtrip',
+    category: 'code-debug',
+    label: '代码调试',
+    status: 'completed',
+    time: 1_700_000_000_000,
+    chatHint: '主人刚才似乎又在排查棘手的代码问题。',
+    cgHint: '画面用抽象的程序结构、调试光点与理顺的逻辑线呼应代码调试，不出现可读文字或真实代码',
+  }
+  const savePath = globalSavePath(dshHome)
+  const readSave = async () => JSON.parse(await nativeFs.readFile(savePath, 'utf8'))
+  const cgOf = (saved: any) => {
+    const state = saved.state || saved
+    return (state.characters.deepseek.cgs || []).at(-1)
+  }
+
+  try {
+    const first = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    await first.post('view')
+    await first.post('settings-set', { language: 'zh-TW' })
+
+    // An affection-seeded save: the next settlement tips the character over the
+    // level cap, which is what queues a CG.
+    const seeded = await readSave()
+    const state = seeded.state || seeded
+    state.activityFeed = [activity]
+    state.characters.deepseek.affection = 999
+    await nativeFs.writeFile(savePath, JSON.stringify(seeded), 'utf8')
+
+    const armed = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    await armed.post('view')
+    await armed.post('chat', { text: '今天也辛苦你了' })
+    // Generation is fired off the request, so wait for the gallery to settle.
+    let gallery: any = { items: [] }
+    for (let attempt = 0; attempt < 200 && gallery.items.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      gallery = await armed.post('cg-gallery')
+    }
+    assert.ok(requested.length > 0, 'DashScope was asked for an image')
+
+    const MARKER = '画面元素呼应对方最近的经历与工作：'
+    const LAYOUT = '横向16:9桌面壁纸构图'
+    for (const sent of requested) {
+      assert.ok(sent.includes(LAYOUT), 'the request keeps the layout phrase: ' + sent.slice(0, 60))
+      assert.ok(sent.includes(MARKER), 'the request keeps the theme marker')
+      assert.ok(sent.includes('程式除錯'), 'the theme itself is Traditional under zh-TW')
+    }
+
+    const persisted = ((await readSave()).state || await readSave()).characters.deepseek.cgs
+    assert.ok(persisted.length > 0, 'the CG reached the save')
+    for (const cg of persisted) assert.ok(requested.includes(cg.prompt), 'the save holds exactly what was sent')
+
+    // The restart is the part that used to lose the theme: sanitizeStoredCgPrompt
+    // runs on load and rewrites anything it cannot recognise as its own.
+    const restarted = makeHarness(dshHome, new Map(), [], undefined, { dashscopeApiKey: 'sk-test-key' })
+    await restarted.post('view')
+    const reloaded = await restarted.post('cg-gallery')
+    assert.equal(reloaded.items.length, persisted.length, 'every CG came back')
+    for (const item of reloaded.items) {
+      assert.ok(item.prompt.includes(MARKER), 'the marker survived sanitizing')
+      assert.ok(item.prompt.includes('程式除錯'), 'the activity theme survived sanitizing: ' + item.prompt.slice(-60))
+      assert.ok(!item.prompt.includes('隐藏') && !item.prompt.includes('隱藏'), 'not replaced by the hidden-legacy summary')
+    }
+  } finally {
+    globalThis.fetch = originalFetch
     console.error = originalConsoleError
     rmSync(dshHome, { recursive: true, force: true })
   }

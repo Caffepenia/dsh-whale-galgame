@@ -1,6 +1,6 @@
 # dsh-whale-galgame · 세션을 넘나드는 작업 이벤트를 감지하는 다중 캐릭터 Galgame 엔진
 
-[简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **한국어**
+[简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **한국어** · [繁體中文](README.zh-TW.md)
 
 Harness에서 방금 마친 작업이 캐릭터의 다음 한마디로 자연스럽게 이어집니다.
 

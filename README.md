@@ -1,6 +1,6 @@
 # dsh-whale-galgame · 跨会话任务事件感知的多角色 Galgame 引擎
 
-**简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
+**简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [繁體中文](README.zh-TW.md)
 
 ## 简介
 

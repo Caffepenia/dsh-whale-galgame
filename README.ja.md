@@ -1,6 +1,6 @@
 # dsh-whale-galgame · セッションをまたぐタスクイベントを感知するマルチキャラクター Galgame エンジン
 
-[简体中文](README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md)
+[简体中文](README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [繁體中文](README.zh-TW.md)
 
 Harness で終えたばかりの作業が、キャラクターの次の気遣いにつながります。
 
