@@ -18,7 +18,13 @@ async function forceGarbageCollection(): Promise<void> {
         const exposed = runInNewContext('gc') as () => void
         return () => exposed()
       })()
-  for (let attempt = 0; attempt < 8; attempt++) {
+  await new Promise((resolve) => setImmediate(resolve))
+  for (let attempt = 0; attempt < 24; attempt++) {
+    let pressure: Array<{ attempt: number; item: number }> | null = Array.from(
+      { length: 4_096 },
+      (_value, item) => ({ attempt, item }),
+    )
+    pressure = null
     collect()
     await new Promise((resolve) => setImmediate(resolve))
   }
