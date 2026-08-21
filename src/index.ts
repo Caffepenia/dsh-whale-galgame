@@ -2725,17 +2725,33 @@ export function apply(
     })
   }
 
-  /**
-   * Models that refused `temperature`. Reasoning models, and the Codex bridge
-   * in front of them, reject sampling knobs outright, so the first refusal is
-   * remembered per model rather than costing a doubled round trip every call.
-   */
+  /** Models confirmed by a successful retry of the canonical Codex refusal. */
   const samplingUnsupported = new Set<string>()
 
   /**
-   * One model call, retried once without `temperature` when the provider says
-   * it does not take one. Every model call routes through here, so the retry
-   * covers chat, emotion, choices and the side-story writer alike.
+   * Retry and cache deliberately accept different errors. A retry only costs
+   * one request, so any recognized English complaint containing the exact
+   * `temperature` identifier gets one attempt without it; grammatical scope,
+   * quoted echoes and negation are intentionally ignored. A bad cache entry
+   * would silently alter the whole session, so prose is never generalized for
+   * caching: only the exact observed Codex bridge refusal is admitted, and
+   * only after its retry succeeds. Other languages fall through until an
+   * observed provider wording or structured parameter field reaches this API.
+   */
+  function shouldRetryWithoutTemperature(message: string): boolean {
+    const namesTemperature = /(?:^|[^A-Za-z0-9_-])temperature(?=$|[^A-Za-z0-9_-])/i.test(message)
+    if (!namesTemperature) return false
+    return /\bunsupported\b|\bunsupported[_-]?parameters?\b|\bnot\s+(?:currently\s+)?supported\b|\bnot\s+a\s+supported\s+parameter\b|\b(?:isn|aren|doesn)['’]t\s+support(?:ed)?\b|\bdoes\s+not\s+support\b|\bunknown\s+parameters?\b|\bnot\s+allowed\b|\bcannot\s+accept\b/i.test(message)
+  }
+
+  function isCanonicalTemperatureRefusal(message: string): boolean {
+    return /^model stream failed:\s*Codex error:\s*Unsupported parameter:\s*temperature\s*$/i.test(message.trim())
+  }
+
+  /**
+   * One model call, with the broad classifier allowed one cheap probe without
+   * `temperature`. Every model call routes through here, so the retry covers
+   * chat, emotion, choices and the side-story writer alike.
    */
   async function streamText(options: any, externalSignal?: AbortSignal): Promise<string> {
     const key = String(options.provider) + '/' + String(options.model)
@@ -2748,11 +2764,15 @@ export function apply(
     try {
       return await streamOnce(options, externalSignal)
     } catch (err) {
+      if (options.temperature === undefined) throw err
       const message = err instanceof Error ? err.message : String(err)
-      const refused = /unsupported parameter/i.test(message) && /temperature/i.test(message)
-      if (options.temperature === undefined || !refused) throw err
-      samplingUnsupported.add(key)
-      return await streamOnce(withoutTemperature(), externalSignal)
+      if (!shouldRetryWithoutTemperature(message)) throw err
+      // The refusal may have raced a caller deadline. Retrying past an abort
+      // would start a second provider request after cancellation.
+      if (externalSignal && externalSignal.aborted) throw abortFailure(externalSignal, 'model stream aborted')
+      const retried = await streamOnce(withoutTemperature(), externalSignal)
+      if (isCanonicalTemperatureRefusal(message)) samplingUnsupported.add(key)
+      return retried
     }
   }
 
